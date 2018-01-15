@@ -644,6 +644,20 @@ pub unsafe extern "system" fn callback(window: HWND, msg: UINT,
                                     mem::transmute(&mut data), &mut data_size,
                                     mem::size_of::<winuser::RAWINPUTHEADER>() as UINT);
 
+            //TODO: This is where we come in. Only mice are handled,
+            //so we need to add a interface for generic HIDs
+            //that the engine can retrieve.
+            //
+            //The existing behavior already trips Event::DeviceEvents,
+            //we should leverage this so there's no extra interface for the
+            //engine to have to consider.
+            //
+            //The main interface addition that might be needed
+            //is that there should be some way to
+            //query for all the devices available to the window
+            //and their properties - but this is very likely to be
+            //something already in the library.
+
             if data.header.dwType == winuser::RIM_TYPEMOUSE {
                 let mouse = data.data.mouse();
                 if mouse.usFlags & winuser::MOUSE_MOVE_RELATIVE == winuser::MOUSE_MOVE_RELATIVE {
