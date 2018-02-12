@@ -1,5 +1,7 @@
 use super::get_hid_properties;
 
+use std::mem::size_of;
+
 //TODO_rust:
 //Make return type into Result<(InputDevInfo, u32), (some error type)>
 /**
@@ -10,7 +12,7 @@ pub unsafe fn get_device_properties(outDevs: &mut u32) -> TypedHandle<InputDevIn
 	LogV("Finding input devices...");
 	let mut numDevs = 0u32;
 	//Get the number of controllers
-	GetRawInputDeviceList(NULL, &numDevs, sizeof(RAWINPUTDEVICELIST));
+	GetRawInputDeviceList(NULL, &numDevs, size_of<RAWINPUTDEVICELIST>());
 	//notify output var of the device count
 	LogD(String("Found ") + numDevs + " controllers");
 	*outDevs = 0;
@@ -21,7 +23,7 @@ pub unsafe fn get_device_properties(outDevs: &mut u32) -> TypedHandle<InputDevIn
 	}
 	//now create the device info
 	let mut devices: RAWINPUTDEVICELIST* = CustomArrayNew<RAWINPUTDEVICELIST>(numDevs, PLAT_ALLOC, "RawDevListAlloc");
-	memset(devices, 0, numDevs*sizeof(RAWINPUTDEVICELIST));
+	memset(devices, 0, numDevs*size_of<RAWINPUTDEVICELIST>());
 	let mut devInfoList: InputDevInfo* = CustomArrayNew<InputDevInfo>(numDevs, PLAT_ALLOC, "RawDevListAlloc");
 	
 	//register the info list with handle system
@@ -33,11 +35,11 @@ pub unsafe fn get_device_properties(outDevs: &mut u32) -> TypedHandle<InputDevIn
 	}
 
 	//get actual device data
-	GetRawInputDeviceList(devices, &numDevs, sizeof(RAWINPUTDEVICELIST));
+	GetRawInputDeviceList(devices, &numDevs, size_of<RAWINPUTDEVICELIST>());
 
 	//init capability information array
 	let mut ctrlStatsTemp: HIDP_CAPS* = CustomArrayNew<HIDP_CAPS>(numDevs, PLAT_ALLOC, "RawDevListAlloc");
-	memset(ctrlStatsTemp, 0, numDevs*sizeof(HIDP_CAPS));
+	memset(ctrlStatsTemp, 0, numDevs*size_of<HIDP_CAPS>());
 	
 	//Make the HID capability lists.
 	//Note that these are both arrays of arrays;
@@ -45,9 +47,9 @@ pub unsafe fn get_device_properties(outDevs: &mut u32) -> TypedHandle<InputDevIn
 	//In practice, game controllers & joysticks only have multiple value caps,
 	//and one usage range for buttons.
 	let mut btnStatsTemp: HIDP_BUTTON_CAPS** = CustomArrayNew<HIDP_BUTTON_CAPS*>(numDevs, PLAT_ALLOC, "RawDevListAlloc");
-	memset(btnStatsTemp, 0, numDevs*sizeof(HIDP_BUTTON_CAPS*));
+	memset(btnStatsTemp, 0, numDevs*size_of<HIDP_BUTTON_CAPS*>());
 	let mut valStatsTemp: HIDP_VALUE_CAPS** = CustomArrayNew<HIDP_VALUE_CAPS*>(numDevs, PLAT_ALLOC, "RawDevListAlloc");
-	memset(valStatsTemp, 0, numDevs*sizeof(HIDP_VALUE_CAPS*));
+	memset(valStatsTemp, 0, numDevs*size_of<HIDP_VALUE_CAPS*>());
 
 	//fill RI device list
 	for i in 0..numDevs {

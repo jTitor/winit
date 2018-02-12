@@ -1,23 +1,29 @@
 /*!
  * Handlers for raw input events such as WM_INPUT.
  */
+use std::mem::size_of;
+//TODO_rust: need Win32 uses: GET_X_LPARAM, GET_Y_LPARAM
 
-//Input callbacks.
-
+/**
+ * Callback for Win32 raw input message events.
+ * As per Win32 handler convention, returns nonzero if
+ * the message was fully processed and zero otherwise
+ */
 pub fn onUpdateInput(wPar: WPARAM, lPar: LPARAM) -> u32 {
 	//this only updates if we have something to handle input in the first place
 	if inputMgrHnd {
 		TypedHandle<InputManager> castHnd = inputMgrHnd;
 		//data handle is the LPARAM
 		//WPARAM indicates where window was when event happened, foreground or background
-		U32 bufSz = 0;
-		let err: LONG = 0;
-		static const U32 MAX_BTNS = 64;
-		static USAGE usageList[MAX_BTNS];
-		static U32 axisVal = 0;
+		let mut bufSz: u32 = 0;
+		let mut err: LONG = 0;
+		let MAX_BTNS = 64;
+		let mut usageList: [USAGE; MAX_BTNS] = [USAGE{}; MAX_BTNS];
+		let mut static axisVal = 0;
+		let mut rawInputBuf = RAWINPUT{};
 
 		//get buffer size
-		err = GetRawInputData((HRAWINPUT)lPar, RID_INPUT, NULL, &bufSz, sizeof(RAWINPUTHEADER));
+		err = GetRawInputData(lPar as HRAWINPUT, RID_INPUT, NULL, &bufSz, size_of<RAWINPUTHEADER>());
 		if err == -1 {
 			//we couldn't get the buffer size!
 			return 0;
@@ -25,11 +31,11 @@ pub fn onUpdateInput(wPar: WPARAM, lPar: LPARAM) -> u32 {
 
 		bufSz = RIBUF_LEN;
 		//get the actual data
-		err = GetRawInputData((HRAWINPUT)lPar, RID_INPUT, rawInputBuf, &bufSz, sizeof(RAWINPUTHEADER));
-		RAWINPUT* riBuf = (RAWINPUT*)(void*)rawInputBuf;
+		err = GetRawInputData(lPar as HRAWINPUT, RID_INPUT, &rawInputBuf, &bufSz, size_of<RAWINPUTHEADER>());
+		let DEVICE_ID = rawInputBuf.header.hDevice;
 		if err == -1 {
 			//we've got a unknown problem
-			return false;
+			return 0;
 		}
 
 		//now data should be filled
@@ -38,30 +44,30 @@ pub fn onUpdateInput(wPar: WPARAM, lPar: LPARAM) -> u32 {
 		//and restructure InputManager such that all controllers are stored in a 2D array - indexed first by type,
 		//then by individual number.
 		//By doing so, we could eliminate switches in calls to InputManager.
-		match riBuf->header.dwType {
+		match rawInputBuf.header.dwType {
 			RIM_TYPEHID => {
 					//get controller
-					Controller& ctrlr = castHnd->GetControllerByHandle((U64)riBuf->header.hDevice);
+					Controller& ctrlr = castHnd->GetControllerByHandle(rawInputBuf.header.hDevice as u64);
 					//reinterpret as HID. You'll need the preparsed data.
-					RAWHID& hidDat = riBuf->data.hid;
+					let hidDat: RAWHID = rawInputBuf.data.hid;
 					
 					//get the pointer to that data while we're at it
-					if preParDataMap.count((U64)riBuf->header.hDevice) < 1 {
+					if preParDataMap.count(rawInputBuf.header.hDevice as u64) < 1 {
 						break;
 					}
 
-					PHIDP_PREPARSED_DATA preParDat = preParDataMap[(U64)riBuf->header.hDevice];
+					PHIDP_PREPARSED_DATA preParDat = preParDataMap[rawInputBuf.header.hDevice as u64];
 					
 					//first, get the buttons
 					//only get page 0 because we're dumb!
 					//TODO: test for if buttons AREN'T a range
-					U8 index = castHnd->HandleToIndex((U64)riBuf->header.hDevice);
+					U8 index = castHnd->HandleToIndex(rawInputBuf.header.hDevice as u64);
 					HIDP_BUTTON_CAPS* btnCaps = btnStats[index];
 					U32 btnRange = btnCaps[0].Range.UsageMax - btnCaps[0].Range.UsageMin;
 
 					//clear button state now
 					getUsages(	HidP_Input, btnCaps[0].UsagePage, 0, usageList,
-								(PULONG)&btnRange, preParDat, (PCHAR)hidDat.bRawData, hidDat.dwSizeHid);
+								&btnRange as PULONG, preParDat, hidDat.bRawData as PCHAR, hidDat.dwSizeHid);
 					ctrlr.ClearAllButtons();
 					for i in 0..btnRange {
 						ctrlr.SetButton(usageList[i] - btnStats[index][0].Range.UsageMin);
@@ -73,7 +79,7 @@ pub fn onUpdateInput(wPar: WPARAM, lPar: LPARAM) -> u32 {
 					for i in 0..ctrlr.Info.NumAxis {
 						//TODO: test for if axis is a range
 						getUsageValue(	HidP_Input, valCaps[i].UsagePage, 0, valCaps[i].NotRange.Usage,
-										(PULONG)&axisVal, preParDat, (PCHAR)hidDat.bRawData, hidDat.dwSizeHid);
+										&axisVal as PULONG, preParDat, hidDat.bRawData as PCHAR, hidDat.dwSizeHid);
 						//now set axis value
 						ctrlr.SetAxisRawVal(i, axisVal);
 					}
@@ -90,9 +96,9 @@ pub fn onUpdateInput(wPar: WPARAM, lPar: LPARAM) -> u32 {
 				}
 
 				//get the needed mouse
-				let mut mouse: Mouse& = castHnd->GetMouseByHandle((U64)riBuf->header.hDevice);
+				let mut mouse: Mouse& = castHnd->GetMouseByHandle(rawInputBuf.header.hDevice as u64);
 				//also setup a shortcut for the data
-				let mouseDat: RAWMOUSE& = riBuf->data.mouse;
+				let mouseDat: RAWMOUSE& = rawInputBuf.data.mouse;
 
 				//set mouse data
 				mouse.SetMousePos(mouseDat.lLastX, mouseDat.lLastY);
@@ -123,6 +129,7 @@ pub fn onUpdateInput(wPar: WPARAM, lPar: LPARAM) -> u32 {
 					let flag_down = mouse_flags[mouse_button][0];
 					let flag_up = mouse_flags[mouse_button][1];
 					let which_button_changed = mouse_button_map[mouse_button];
+
 					let mouse_state = 1 if (flags & flag_down) != 0 else (2 if (flags & flag_up) != 0 else 0);
 					
 					match mouse_state {
@@ -156,8 +163,8 @@ pub fn onUpdateInput(wPar: WPARAM, lPar: LPARAM) -> u32 {
 			},
 			RIM_TYPEKEYBOARD => {
 				//Two possible states, key down and key up
-				Keyboard& kbd = castHnd->GetKeyboardByHandle((U64)riBuf->header.hDevice);
-				const RAWKEYBOARD& kbdDat = riBuf->data.keyboard;
+				Keyboard& kbd = castHnd->GetKeyboardByHandle(rawInputBuf.header.hDevice as u64);
+				const RAWKEYBOARD& kbdDat = rawInputBuf.data.keyboard;
 				//each message carries ONE VKey.
 				//Convert it to a platform-independent keycode.
 				use events::VirtualKeyCode;
@@ -235,6 +242,6 @@ void Win32Platform::onUpdateGUI(LPARAM lPar)
 	if(inputMgrHnd)
 	{
 		TypedHandle<InputManager> castHnd = inputMgrHnd;
-		castHnd->SetGUIMousePos((F32)GET_X_LPARAM(lPar), (F32)GET_Y_LPARAM(lPar));
+		castHnd->SetGUIMousePos(GET_X_LPARAM(lPar) as f32, GET_Y_LPARAM(lPar) as f32);
 	}
 }

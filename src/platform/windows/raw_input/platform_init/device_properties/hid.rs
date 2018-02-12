@@ -1,6 +1,8 @@
 //TODO_rust: Raw input functions aren't all necessarily
 //in the Win32 DLLs commonly loaded by compatibility libraries.
 //They may have to be manually loaded here.
+use std::cmp;
+use std::mem::size_of;
 
 //DLL handle for USB HID
 HMODULE hidDLL = NULL;
@@ -58,7 +60,7 @@ pub unsafe fn get_hid_properties(out_num_devices: &mut u32, out_device_winit_inf
 	//there's no getting more information here;
 	//go to the next controller.
 	if err < -1 {
-		Log::W(String("Could not get allocation size for device ") + i + "!");
+		LogW(String("Could not get allocation size for device ") + i + "!");
 		Win32Helpers::LogLastError();
 		//invalidate this device
 		out_device_winit_info.PlatHandle = 0;
@@ -70,10 +72,9 @@ pub unsafe fn get_hid_properties(out_num_devices: &mut u32, out_device_winit_inf
 	//save this data to the map
 	//TODO_rust: How do we do an arbitrary mem:: allocation?
 	out_preparsed_data_map[out_device_winit_info.PlatHandle] = (PHIDP_PREPARSED_DATA)Allocator::_CustomMalloc(buf_len, PLAT_ALLOC, "RawDevListAlloc", __FILE__, __LINE__);
-	L_ASSERT(out_preparsed_data_map[out_device_winit_info.PlatHandle] != NULL && "Ran out of memory for preparsed HID data!");
 	
 	//load preparsed data
-	err = GetRawInputDeviceInfo((HANDLE)out_device_winit_info.PlatHandle, RIDI_PREPARSEDDATA, out_preparsed_data_map[out_device_winit_info.PlatHandle], &buf_len);
+	err = GetRawInputDeviceInfo(out_device_winit_info.PlatHandle as HANDLE, RIDI_PREPARSEDDATA, out_preparsed_data_map[out_device_winit_info.PlatHandle], &buf_len);
 	if err < -1 {
 		//if we couldn't get the preparsed data
 		//report failure
@@ -95,9 +96,9 @@ pub unsafe fn get_hid_properties(out_num_devices: &mut u32, out_device_winit_inf
 	//like the F1-F12 keys on a keyboard.
 	//Because of this we need to loop through each capability and
 	//get its specific info.
-	let numBtnCaps: u16 = ctrlStatsTemp[i].NumberInputButtonCaps;
+	let mut numBtnCaps: u16 = ctrlStatsTemp[i].NumberInputButtonCaps;
 	out_device_winit_info.NumBtns = 0;
-	let numValCaps: u16 = ctrlStatsTemp[i].NumberInputValueCaps;
+	let mut numValCaps: u16 = ctrlStatsTemp[i].NumberInputValueCaps;
 	out_device_winit_info.NumAxis = 0;
 
 	//make cap arrays for this device
@@ -123,13 +124,13 @@ pub unsafe fn get_hid_properties(out_num_devices: &mut u32, out_device_winit_inf
 	getValueCaps(HidP_Input, valStatsTemp, &numValCaps, out_preparsed_data_map[out_device_winit_info.PlatHandle]);
 	//cap the number of axii to the out_device_winit_info struct's maximum axii,
 	//to avoid corrupting the structure
-	numValCaps = Math::Min(numValCaps, Controller::MAX_AXIS as u16);
+	numValCaps = cmp::min(numValCaps, Controller::MAX_AXIS as u16);
 	LogV(String("\tLoaded axis out_device_winit_info for ") + out_device_winit_info.PlatHandle + ", parsing data");
 	
 	//setup axis data
 	for i in 0..numValCaps {
 		LogV(String("Parsing axis ") + j + " for device " + out_device_winit_info.PlatHandle);
-		let valCap: HIDP_VALUE_CAPS& = valStatsTemp[i] as HIDP_VALUE_CAPS&;
+		let valCap: &HIDP_VALUE_CAPS = valStatsTemp[i] as &HIDP_VALUE_CAPS;
 		if(valCap.IsRange) {
 			out_device_winit_info.NumAxis += (valCap.Range.UsageMax - valCap.Range.UsageMin);
 		}
@@ -182,12 +183,14 @@ pub unsafe fn build_hid_detail_list() {
 		LogV(String("Found ") + numHID + " HIDs");
 		//note that this should only be done when the cap data's invalid
 		L_ASSERT(!ctrlStats && !btnStats & !valStats && "Tried to build input device list when list has already been built!");
+
 		//only HIDs need this data, all else can be directly read via API calls
+		//TODO_rust: move to rust allocations/memclears
 		ctrlStats = LArrayNew(HIDP_CAPS, numHID, INPUT_ALLOC, "RawDevListAlloc");
 		btnStats = LArrayNew(HIDP_BUTTON_CAPS*, numHID, INPUT_ALLOC, "RawDevListAlloc");
-		memset(btnStats, 0, numHID*sizeof(HIDP_BUTTON_CAPS*));
+		memset(btnStats, 0, numHID*size_of<&HIDP_BUTTON_CAPS>());
 		valStats = LArrayNew(HIDP_VALUE_CAPS*, numHID, INPUT_ALLOC, "RawDevListAlloc");
-		memset(valStats, 0, numHID*sizeof(HIDP_VALUE_CAPS*));
+		memset(valStats, 0, numHID*size_of<&HIDP_VALUE_CAPS>());
 
 		//retraverse device list!
 		for i in 0...numHID {
