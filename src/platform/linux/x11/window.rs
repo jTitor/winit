@@ -3,7 +3,7 @@ use CreationError;
 use CreationError::OsError;
 use libc;
 use std::borrow::Borrow;
-use std::{mem, cmp};
+use std::{mem, cmp, ptr};
 use std::sync::{Arc, Mutex};
 use std::os::raw::{c_int, c_long, c_uchar, c_ulong, c_void};
 use std::thread;
@@ -51,6 +51,42 @@ pub struct XWindow {
     window: ffi::Window,
     root: ffi::Window,
     screen_id: i32,
+}
+
+impl XWindow {
+    /// Get parent window of `child`
+    ///
+    /// This method can return None if underlying xlib call fails.
+    ///
+    /// # Unsafety
+    ///
+    /// `child` must be a valid `Window`.
+    unsafe fn get_parent_window(&self, child: ffi::Window) -> Option<ffi::Window> {
+        let mut root: ffi::Window = mem::uninitialized();
+        let mut parent: ffi::Window = mem::uninitialized();
+        let mut children: *mut ffi::Window = ptr::null_mut();
+        let mut nchildren: libc::c_uint = mem::uninitialized();
+
+        let res = (self.display.xlib.XQueryTree)(
+            self.display.display,
+            child,
+            &mut root,
+            &mut parent,
+            &mut children,
+            &mut nchildren
+        );
+
+        if res == 0 {
+            return None;
+        }
+
+        // The list of children isn't used
+        if children != ptr::null_mut() {
+            (self.display.xlib.XFree)(children as *mut _);
+        }
+
+        Some(parent)
+    }
 }
 
 unsafe impl Send for XWindow {}
@@ -497,6 +533,7 @@ impl Window2 {
             let mut border: libc::c_uint = mem::uninitialized();
             let mut depth: libc::c_uint = mem::uninitialized();
 
+            // Get non-positioning data from winit window
             if (self.x.display.xlib.XGetGeometry)(self.x.display.display, self.x.window,
                 &mut root, &mut x, &mut y, &mut width, &mut height,
                 &mut border, &mut depth) == 0
@@ -504,7 +541,39 @@ impl Window2 {
                 return None;
             }
 
-            Some((x as i32, y as i32, width as u32, height as u32, border as u32))
+            let width_out = width;
+            let height_out = height;
+            let border_out = border;
+
+            // Some window managers like i3wm will actually nest application
+            // windows (like those opened by winit) within other windows to, for
+            // example, add decorations. Initially when debugging this method on
+            // i3, the x and y positions were always returned as "2".
+            //
+            // The solution that other xlib abstractions use is to climb up the
+            // window hierarchy until just below the root window, and that
+            // window must be used to determine the appropriate position.
+            let window = {
+                let root = self.x.root;
+                let mut window = self.x.window;
+                loop {
+                    let candidate = self.x.get_parent_window(window).unwrap();
+                    if candidate == root {
+                        break window;
+                    }
+
+                    window = candidate;
+                }
+            };
+
+            if (self.x.display.xlib.XGetGeometry)(self.x.display.display, window,
+                &mut root, &mut x, &mut y, &mut width, &mut height,
+                &mut border, &mut depth) == 0
+            {
+                return None;
+            }
+
+            Some((x as i32, y as i32, width_out as u32, height_out as u32, border_out as u32))
         }
     }
 
@@ -714,15 +783,22 @@ impl Window2 {
             Hide => self.update_cursor(self.get_cursor(*self.cursor.lock().unwrap())),
         }
 
-        *cursor_state = state;
         match state {
-            Normal => Ok(()),
+            Normal => {
+                *cursor_state = state;
+                Ok(())
+            },
             Hide => {
+                *cursor_state = state;
                 self.update_cursor(self.create_empty_cursor());
                 Ok(())
             },
             Grab => {
                 unsafe {
+                    // Ungrab before grabbing to prevent passive grabs
+                    // from causing AlreadyGrabbed
+                    (self.x.display.xlib.XUngrabPointer)(self.x.display.display, ffi::CurrentTime);
+
                     match (self.x.display.xlib.XGrabPointer)(
                         self.x.display.display, self.x.window, ffi::True,
                         (ffi::ButtonPressMask | ffi::ButtonReleaseMask | ffi::EnterWindowMask |
@@ -733,7 +809,10 @@ impl Window2 {
                         ffi::GrabModeAsync, ffi::GrabModeAsync,
                         self.x.window, 0, ffi::CurrentTime
                     ) {
-                        ffi::GrabSuccess => Ok(()),
+                        ffi::GrabSuccess => {
+                            *cursor_state = state;
+                            Ok(())
+                        },
                         ffi::AlreadyGrabbed | ffi::GrabInvalidTime |
                         ffi::GrabNotViewable | ffi::GrabFrozen
                             => Err("cursor could not be grabbed".to_string()),
