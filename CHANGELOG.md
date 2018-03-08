@@ -1,6 +1,11 @@
 # Unreleased
 
+# Version 0.11.2 (2018-03-06)
+
 - Impl `Hash`, `PartialEq`, and `Eq` for `events::ModifiersState`.
+- Implement `MonitorId::get_hidpi_factor` for MacOS.
+- Added method `os::macos::MonitorIdExt::get_nsscreen() -> *mut c_void` that gets a `NSScreen` object matching the monitor ID.
+- Send `Awakened` event on Android when event loop is woken up.
 
 # Version 0.11.1 (2018-02-19)
 
