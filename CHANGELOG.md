@@ -1,5 +1,25 @@
 # Unreleased
 
+- Overhauled X11 window geometry calculations. `get_position` and `set_position` are more universally accurate across different window managers, and `get_outer_size` actually works now.
+
+# Version 0.12.0 (2018-04-06)
+
+- Added subclass to macos windows so they can be made resizable even with no decorations.
+- Dead keys now work properly on X11, no longer resulting in a panic.
+- On X11, input method creation first tries to use the value from the user's `XMODIFIERS` environment variable, so application developers should no longer need to manually call `XSetLocaleModifiers`. If that fails, fallbacks are tried, which should prevent input method initialization from ever outright failing.
+- Fixed thread safety issues with input methods on X11.
+- Add support for `Touch` for win32 backend.
+- Fixed `Window::get_inner_size` and friends to return the size in pixels instead of points when using HIDPI displays on OSX.
+
+# Version 0.11.3 (2018-03-28)
+
+- Added `set_min_dimensions` and `set_max_dimensions` methods to `Window`, and implemented on Windows, X11, Wayland, and OSX.
+- On X11, dropping a `Window` actually closes it now, and clicking the window's × button (or otherwise having the WM signal to close it) will result in the window closing.
+- Added `WindowBuilderExt` methods for macos: `with_titlebar_transparent`,
+  `with_title_hidden`, `with_titlebar_buttons_hidden`,
+  `with_fullsize_content_view`.
+- Mapped X11 numpad keycodes (arrows, Home, End, PageUp, PageDown, Insert and Delete) to corresponding virtual keycodes
+
 # Version 0.11.2 (2018-03-06)
 
 - Impl `Hash`, `PartialEq`, and `Eq` for `events::ModifiersState`.
