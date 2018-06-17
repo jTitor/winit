@@ -1,14 +1,13 @@
+use std::char;
+use std::os::raw::c_int;
+
 use events::VirtualKeyCode;
 use events::ModifiersState;
 
-use winapi::shared::minwindef::{WPARAM, LPARAM};
+use winapi::shared::minwindef::{WPARAM, LPARAM, UINT};
 use winapi::um::winuser;
 
 use ScanCode;
-use std::char;
-
-const MAPVK_VK_TO_CHAR: u32 = 2;
-const MAPVK_VSC_TO_VK_EX: u32 = 3;
 
 pub fn get_key_mods() -> ModifiersState {
     let mut mods = ModifiersState::default();
@@ -29,18 +28,9 @@ pub fn get_key_mods() -> ModifiersState {
     mods
 }
 
-pub fn vkeycode_to_element(wparam: WPARAM, lparam: LPARAM) -> (ScanCode, Option<VirtualKeyCode>) {
-    let scancode = ((lparam >> 16) & 0xff) as u32;
-    let extended = (lparam & 0x01000000) != 0;
-    let vk = match wparam as i32 {
-        winuser::VK_SHIFT => unsafe { winuser::MapVirtualKeyA(scancode, MAPVK_VSC_TO_VK_EX) as i32 },
-        winuser::VK_CONTROL => if extended { winuser::VK_RCONTROL } else { winuser::VK_LCONTROL },
-        winuser::VK_MENU => if extended { winuser::VK_RMENU } else { winuser::VK_LMENU },
-        other => other
-    };
-
+pub fn vkey_to_winit_vkey(vkey: c_int) -> Option<VirtualKeyCode> {
     // VK_* codes are documented here https://msdn.microsoft.com/en-us/library/windows/desktop/dd375731(v=vs.85).aspx
-    (scancode, match vk {
+    match vkey {
         //winuser::VK_LBUTTON => Some(VirtualKeyCode::Lbutton),
         //winuser::VK_RBUTTON => Some(VirtualKeyCode::Rbutton),
         //winuser::VK_CANCEL => Some(VirtualKeyCode::Cancel),
@@ -55,8 +45,8 @@ pub fn vkeycode_to_element(wparam: WPARAM, lparam: LPARAM) -> (ScanCode, Option<
         winuser::VK_RSHIFT => Some(VirtualKeyCode::RShift),
         winuser::VK_LCONTROL => Some(VirtualKeyCode::LControl),
         winuser::VK_RCONTROL => Some(VirtualKeyCode::RControl),
-        winuser::VK_LMENU => Some(VirtualKeyCode::LMenu),
-        winuser::VK_RMENU => Some(VirtualKeyCode::RMenu),
+        winuser::VK_LMENU => Some(VirtualKeyCode::LAlt),
+        winuser::VK_RMENU => Some(VirtualKeyCode::RAlt),
         winuser::VK_PAUSE => Some(VirtualKeyCode::Pause),
         winuser::VK_CAPITAL => Some(VirtualKeyCode::Capital),
         winuser::VK_KANA => Some(VirtualKeyCode::Kana),
@@ -191,13 +181,13 @@ pub fn vkeycode_to_element(wparam: WPARAM, lparam: LPARAM) -> (ScanCode, Option<
         winuser::VK_OEM_COMMA => Some(VirtualKeyCode::Comma),
         winuser::VK_OEM_MINUS => Some(VirtualKeyCode::Minus),
         winuser::VK_OEM_PERIOD => Some(VirtualKeyCode::Period),
-        winuser::VK_OEM_1 => map_text_keys(vk),
-        winuser::VK_OEM_2 => map_text_keys(vk),
-        winuser::VK_OEM_3 => map_text_keys(vk),
-        winuser::VK_OEM_4 => map_text_keys(vk),
-        winuser::VK_OEM_5 => map_text_keys(vk),
-        winuser::VK_OEM_6 => map_text_keys(vk),
-        winuser::VK_OEM_7 => map_text_keys(vk),
+        winuser::VK_OEM_1 => map_text_keys(vkey),
+        winuser::VK_OEM_2 => map_text_keys(vkey),
+        winuser::VK_OEM_3 => map_text_keys(vkey),
+        winuser::VK_OEM_4 => map_text_keys(vkey),
+        winuser::VK_OEM_5 => map_text_keys(vkey),
+        winuser::VK_OEM_6 => map_text_keys(vkey),
+        winuser::VK_OEM_7 => map_text_keys(vkey),
         /*winuser::VK_OEM_8 => Some(VirtualKeyCode::Oem_8), */
         winuser::VK_OEM_102 => Some(VirtualKeyCode::OEM102),
         /*winuser::VK_PROCESSKEY => Some(VirtualKeyCode::Processkey),
@@ -212,13 +202,58 @@ pub fn vkeycode_to_element(wparam: WPARAM, lparam: LPARAM) -> (ScanCode, Option<
         winuser::VK_PA1 => Some(VirtualKeyCode::Pa1),
         winuser::VK_OEM_CLEAR => Some(VirtualKeyCode::Oem_clear),*/
         _ => None
-    })
+    }
+}
+
+pub fn handle_extended_keys(vkey: c_int, mut scancode: UINT, extended: bool) -> Option<(c_int, UINT)> {
+    // Welcome to hell https://blog.molecular-matters.com/2011/09/05/properly-handling-keyboard-input/
+    let vkey = match vkey {
+        winuser::VK_SHIFT => unsafe { winuser::MapVirtualKeyA(
+            scancode,
+            winuser::MAPVK_VSC_TO_VK_EX,
+        ) as _ },
+        winuser::VK_CONTROL => if extended {
+            winuser::VK_RCONTROL
+        } else {
+            winuser::VK_LCONTROL
+        },
+        winuser::VK_MENU => if extended {
+            winuser::VK_RMENU
+        } else {
+            winuser::VK_LMENU
+        },
+        _ => match scancode {
+            // This is only triggered when using raw input. Without this check, we get two events whenever VK_PAUSE is
+            // pressed, the first one having scancode 0x1D but vkey VK_PAUSE...
+            0x1D if vkey == winuser::VK_PAUSE => return None,
+            // ...and the second having scancode 0x45 but an unmatched vkey!
+            0x45 => winuser::VK_PAUSE,
+            // VK_PAUSE and VK_SCROLL have the same scancode when using modifiers, alongside incorrect vkey values.
+            0x46 => {
+                if extended {
+                    scancode = 0x45;
+                    winuser::VK_PAUSE
+                } else {
+                    winuser::VK_SCROLL
+                }
+            },
+            _ => vkey,
+        },
+    };
+    Some((vkey, scancode))
+}
+
+pub fn process_key_params(wparam: WPARAM, lparam: LPARAM) -> Option<(ScanCode, Option<VirtualKeyCode>)> {
+    let scancode = ((lparam >> 16) & 0xff) as UINT;
+    let extended = (lparam & 0x01000000) != 0;
+    handle_extended_keys(wparam as _, scancode, extended)
+        .map(|(vkey, scancode)| (scancode, vkey_to_winit_vkey(vkey)))
 }
 
 // This is needed as windows doesn't properly distinguish
 // some virtual key codes for different keyboard layouts
 fn map_text_keys(win_virtual_key: i32) -> Option<VirtualKeyCode> {
-    let char_key = unsafe { winuser::MapVirtualKeyA(win_virtual_key as u32, MAPVK_VK_TO_CHAR) } & 0x7FFF;
+    let char_key = unsafe { winuser::MapVirtualKeyA(win_virtual_key as u32, winuser::MAPVK_VK_TO_CHAR) } & 0x7FFF;
     match char::from_u32(char_key) {
         Some(';') => Some(VirtualKeyCode::Semicolon),
         Some('/') => Some(VirtualKeyCode::Slash),

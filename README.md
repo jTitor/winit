@@ -4,12 +4,12 @@
 
 [![Docs.rs](https://docs.rs/winit/badge.svg)](https://docs.rs/winit)
 
-[![Build Status](https://travis-ci.org/tomaka/winit.png?branch=master)](https://travis-ci.org/tomaka/winit)
+[![Build Status](https://travis-ci.org/tomaka/winit.svg?branch=master)](https://travis-ci.org/tomaka/winit)
 [![Build status](https://ci.appveyor.com/api/projects/status/5h87hj0g4q2xe3j9/branch/master?svg=true)](https://ci.appveyor.com/project/tomaka/winit/branch/master)
 
 ```toml
 [dependencies]
-winit = "0.7"
+winit = "0.15"
 ```
 
 ## [Documentation](https://docs.rs/winit)
@@ -33,9 +33,10 @@ fn main() {
 
     events_loop.run_forever(|event| {
         match event {
-            winit::Event::WindowEvent { event: winit::WindowEvent::Closed, .. } => {
-                winit::ControlFlow::Break
-            },
+            winit::Event::WindowEvent {
+              event: winit::WindowEvent::CloseRequested,
+              ..
+            } => winit::ControlFlow::Break,
             _ => winit::ControlFlow::Continue,
         }
     });

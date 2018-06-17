@@ -15,7 +15,7 @@
 //!  - Calling `Window::new(&events_loop)`.
 //!  - Calling `let builder = WindowBuilder::new()` then `builder.build(&events_loop)`.
 //!
-//! The first way is the simpliest way and will give you default values for everything.
+//! The first way is the simplest way and will give you default values for everything.
 //!
 //! The second way allows you to customize the way your window will look and behave by modifying
 //! the fields of the `WindowBuilder` object before you create the window.
@@ -35,14 +35,18 @@
 //!
 //! ```no_run
 //! use winit::{Event, WindowEvent};
+//! use winit::dpi::LogicalSize;
 //! # use winit::EventsLoop;
 //! # let mut events_loop = EventsLoop::new();
 //!
 //! loop {
 //!     events_loop.poll_events(|event| {
 //!         match event {
-//!             Event::WindowEvent { event: WindowEvent::Resized(w, h), .. } => {
-//!                 println!("The window was resized to {}x{}", w, h);
+//!             Event::WindowEvent {
+//!                 event: WindowEvent::Resized(LogicalSize { width, height }),
+//!                 ..
+//!             } => {
+//!                 println!("The window was resized to {}x{}", width, height);
 //!             },
 //!             _ => ()
 //!         }
@@ -60,8 +64,8 @@
 //!
 //! events_loop.run_forever(|event| {
 //!     match event {
-//!         Event::WindowEvent { event: WindowEvent::Closed, .. } => {
-//!             println!("The window was closed ; stopping");
+//!         Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+//!             println!("The close button was pressed; stopping");
 //!             ControlFlow::Break
 //!         },
 //!         _ => ControlFlow::Continue,
@@ -80,11 +84,12 @@
 //! to create an OpenGL/Vulkan/DirectX/Metal/etc. context that will draw on the window.
 //!
 
-#[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "windows"))]
+#[allow(unused_imports)]
 #[macro_use]
 extern crate lazy_static;
-
 extern crate libc;
+#[cfg(feature = "icon_loading")]
+extern crate image;
 
 #[cfg(target_os = "windows")]
 extern crate winapi;
@@ -100,16 +105,21 @@ extern crate core_graphics;
 #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd"))]
 extern crate x11_dl;
 #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd"))]
+extern crate parking_lot;
+#[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd"))]
 extern crate percent_encoding;
 #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "dragonfly", target_os = "openbsd"))]
-#[macro_use]
-extern crate wayland_client;
+extern crate smithay_client_toolkit as sctk;
 
+pub(crate) use dpi::*; // TODO: Actually change the imports throughout the codebase.
 pub use events::*;
 pub use window::{AvailableMonitorsIter, MonitorId};
+pub use icon::*;
 
-mod platform;
+pub mod dpi;
 mod events;
+mod icon;
+mod platform;
 mod window;
 
 pub mod os;
@@ -126,7 +136,7 @@ pub mod os;
 ///
 /// events_loop.run_forever(|event| {
 ///     match event {
-///         Event::WindowEvent { event: WindowEvent::Closed, .. } => {
+///         Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
 ///             ControlFlow::Break
 ///         },
 ///         _ => ControlFlow::Continue,
@@ -224,6 +234,11 @@ impl EventsLoop {
     /// Calls `callback` every time an event is received. If no event is available, sleeps the
     /// current thread and waits for an event. If the callback returns `ControlFlow::Break` then
     /// `run_forever` will immediately return.
+    ///
+    /// # Danger!
+    ///
+    /// The callback is run after *every* event, so if its execution time is non-trivial the event queue may not empty
+    /// at a sufficient rate. Rendering in the callback with vsync enabled **will** cause significant lag.
     #[inline]
     pub fn run_forever<F>(&mut self, callback: F)
         where F: FnMut(Event) -> ControlFlow
@@ -370,6 +385,12 @@ pub enum MouseCursor {
     RowResize,
 }
 
+impl Default for MouseCursor {
+    fn default() -> Self {
+        MouseCursor::Default
+    }
+}
+
 /// Describes how winit handles the cursor.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum CursorState {
@@ -387,24 +408,35 @@ pub enum CursorState {
     Grab,
 }
 
+impl Default for CursorState {
+    fn default() -> Self {
+        CursorState::Normal
+    }
+}
+
 /// Attributes to use when creating a window.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct WindowAttributes {
     /// The dimensions of the window. If this is `None`, some platform-specific dimensions will be
     /// used.
     ///
     /// The default is `None`.
-    pub dimensions: Option<(u32, u32)>,
+    pub dimensions: Option<LogicalSize>,
 
     /// The minimum dimensions a window can be, If this is `None`, the window will have no minimum dimensions (aside from reserved).
     ///
     /// The default is `None`.
-    pub min_dimensions: Option<(u32, u32)>,
+    pub min_dimensions: Option<LogicalSize>,
 
     /// The maximum dimensions a window can be, If this is `None`, the maximum will have no maximum or will be set to the primary monitor's dimensions by the platform.
     ///
     /// The default is `None`.
-    pub max_dimensions: Option<(u32, u32)>,
+    pub max_dimensions: Option<LogicalSize>,
+
+    /// Whether the window is resizable or not.
+    ///
+    /// The default is `true`.
+    pub resizable: bool,
 
     /// Whether the window should be set as fullscreen upon creation.
     ///
@@ -437,6 +469,16 @@ pub struct WindowAttributes {
     /// The default is `true`.
     pub decorations: bool,
 
+    /// Whether the window should always be on top of other windows.
+    ///
+    /// The default is `false`.
+    pub always_on_top: bool,
+
+    /// The window icon.
+    ///
+    /// The default is `None`.
+    pub window_icon: Option<Icon>,
+
     /// [iOS only] Enable multitouch,
     /// see [multipleTouchEnabled](https://developer.apple.com/documentation/uikit/uiview/1622519-multipletouchenabled)
     pub multitouch: bool,
@@ -449,12 +491,15 @@ impl Default for WindowAttributes {
             dimensions: None,
             min_dimensions: None,
             max_dimensions: None,
+            resizable: true,
             title: "winit window".to_owned(),
             maximized: false,
             fullscreen: None,
             visible: true,
             transparent: false,
             decorations: true,
+            always_on_top: false,
+            window_icon: None,
             multitouch: false,
         }
     }

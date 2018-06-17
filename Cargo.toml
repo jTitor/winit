@@ -1,6 +1,6 @@
 [package]
 name = "winit"
-version = "0.12.0"
+version = "0.15.1"
 authors = ["The winit contributors, Pierre Krieger <pierre.krieger1708@gmail.com>"]
 description = "Cross-platform window creation library."
 keywords = ["windowing"]
@@ -10,9 +10,16 @@ repository = "https://github.com/tomaka/winit"
 documentation = "https://docs.rs/winit"
 categories = ["gui"]
 
+[package.metadata.docs.rs]
+features = ["icon_loading"]
+
+[features]
+icon_loading = ["image"]
+
 [dependencies]
 lazy_static = "1"
 libc = "0.2"
+image = { version = "0.19", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies.android_glue]
 version = "0.2"
@@ -22,28 +29,35 @@ objc = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
-cocoa = "0.14"
-core-foundation = "0.5"
-core-graphics = "0.13"
+cocoa = "0.15"
+core-foundation = "0.6"
+core-graphics = "0.14"
 
 [target.'cfg(target_os = "windows")'.dependencies.winapi]
-version = "0.3"
+version = "0.3.5"
 features = [
+    "combaseapi",
+    "dwmapi",
+    "hidusage",
+    "libloaderapi",
+    "objbase",
+    "processthreadsapi",
+    "shellapi",
+    "shellscalingapi",
+    "shobjidl_core",
+    "unknwnbase",
+    "windowsx",
+    "wingdi",
     "winnt",
     "winuser",
-    "wingdi",
-    "shellapi",
-    "dwmapi",
-    "processthreadsapi",
-    "libloaderapi",
-    "windowsx",
-    "hidusage",
 ]
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd"))'.dependencies]
-wayland-client = { version = "0.12.0", features = ["dlopen"] }
-wayland-protocols = { version = "0.12.0", features = ["unstable_protocols"] }
+wayland-client = { version = "0.20.6", features = [ "dlopen", "egl", "cursor"] }
+smithay-client-toolkit = "0.2.2"
+parking_lot = "0.5"
+#wayland-protocols = { version = "0.12.0", features = ["unstable_protocols"] }
 wayland-kbd = "0.13.0"
 wayland-window = "0.13.0"
-x11-dl = "*"#"^2.17"
+x11-dl = "*"#"^2.17.5"
 percent-encoding = "1.0"

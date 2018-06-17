@@ -1,6 +1,106 @@
 # Unreleased
 
+- **Breaking:** Removed `VirtualKeyCode::LMenu` and `VirtualKeyCode::RMenu`; Windows now generates `VirtualKeyCode::LAlt` and `VirtualKeyCode::RAlt` instead.
+- On X11, exiting fullscreen no longer leaves the window in the monitor's top left corner.
+- **Breaking:** `Window::hidpi_factor` has been renamed to `Window::get_hidpi_factor` for better consistency. `WindowEvent::HiDPIFactorChanged` has been renamed to `WindowEvent::HiDpiFactorChanged`. DPI factors are always represented as `f64` instead of `f32` now.
+- The Windows backend is now DPI aware. `WindowEvent::HiDpiFactorChanged` is implemented, and `MonitorId::get_hidpi_factor` and `Window::hidpi_factor` return accurate values.
+- Implemented `WindowEvent::HiDpiFactorChanged` on X11.
+- On macOS, `Window::set_cursor_position` is now relative to the client area.
+- On macOS, setting the maximum and minimum dimensions now applies to the client area dimensions rather than to the window dimensions.
+- On iOS, `MonitorId::get_dimensions` has been implemented and both `MonitorId::get_hidpi_factor` and `Window::get_hidpi_factor` return accurate values.
+- On Emscripten, `MonitorId::get_hidpi_factor` now returns the same value as `Window::get_hidpi_factor` (it previously would always return 1.0).
+- **Breaking:** The entire API for sizes, positions, etc. has changed. In the majority of cases, winit produces and consumes positions and sizes as `LogicalPosition` and `LogicalSize`, respectively. The notable exception is `MonitorId` methods, which deal in `PhysicalPosition` and `PhysicalSize`. See the documentation for specifics and explanations of the types. Additionally, winit automatically conserves logical size when the DPI factor changes.
+- **Breaking:** All deprecated methods have been removed. For `Window::platform_display` and `Window::platform_window`, switch to the appropriate platform-specific `WindowExt` methods. For `Window::get_inner_size_points` and `Window::get_inner_size_pixels`, use the `LogicalSize` returned by `Window::get_inner_size` and convert as needed.
+- HiDPI support for Wayland.
+- `EventsLoop::get_available_monitors` and `EventsLoop::get_primary_monitor` now have identical counterparts on `Window`, so this information can be acquired without an `EventsLoop` borrow.
+- `AvailableMonitorsIter` now implements `Debug`.
+- Fixed quirk on macOS where certain keys would generate characters at twice the normal rate when held down.
+
+# Version 0.15.1 (2018-06-13)
+
+- On X11, the `Moved` event is no longer sent when the window is resized without changing position.
+- `MouseCursor` and `CursorState` now implement `Default`.
+- `WindowBuilder::with_resizable` implemented for Windows, X11, Wayland, and macOS.
+- `Window::set_resizable` implemented for Windows, X11, Wayland, and macOS.
+- On X11, if the monitor's width or height in millimeters is reported as 0, the DPI is now 1.0 instead of +inf.
+- On X11, the environment variable `WINIT_HIDPI_FACTOR` has been added for overriding DPI factor.
+- On X11, enabling transparency no longer causes the window contents to flicker when resizing.
+- On X11, `with_override_redirect` now actually enables override redirect.
+- macOS now generates `VirtualKeyCode::LAlt` and `VirtualKeyCode::RAlt` instead of `None` for both.
+- On macOS, `VirtualKeyCode::RWin` and `VirtualKeyCode::LWin` are no longer switched.
+- On macOS, windows without decorations can once again be resized.
+- Fixed race conditions when creating an `EventsLoop` on X11, most commonly manifesting as "[xcb] Unknown sequence number while processing queue".
+- On macOS, `CursorMoved` and `MouseInput` events are only generated if they occurs within the window's client area.
+- On macOS, resizing the window no longer generates a spurious `MouseInput` event.
+
+# Version 0.15.0 (2018-05-22)
+
+- `Icon::to_cardinals` is no longer public, since it was never supposed to be.
+- Wayland: improve diagnostics if initialization fails
+- Fix some system event key doesn't work when focused, do not block keyevent forward to system on macOS
+- On X11, the scroll wheel position is now correctly reset on i3 and other WMs that have the same quirk.
+- On X11, `Window::get_current_monitor` now reliably returns the correct monitor.
+- On X11, `Window::hidpi_factor` returns values from XRandR rather than the inaccurate values previously queried from the core protocol.
+- On X11, the primary monitor is detected correctly even when using versions of XRandR less than 1.5.
+- `MonitorId` now implements `Debug`.
+- Fixed bug on macOS where using `with_decorations(false)` would cause `set_decorations(true)` to produce a transparent titlebar with no title.
+- Implemented `MonitorId::get_position` on macOS.
+- On macOS, `Window::get_current_monitor` now returns accurate values.
+- Added `WindowBuilderExt::with_resize_increments` to macOS.
+- **Breaking:** On X11, `WindowBuilderExt::with_resize_increments` and `WindowBuilderExt::with_base_size` now take `u32` values rather than `i32`.
+- macOS keyboard handling has been overhauled, allowing for the use of dead keys, IME, etc. Right modifier keys are also no longer reported as being left.
+- Added the `Window::set_ime_spot(x: i32, y: i32)` method, which is implemented on X11 and macOS.
+- **Breaking**: `os::unix::WindowExt::send_xim_spot(x: i16, y: i16)` no longer exists. Switch to the new `Window::set_ime_spot(x: i32, y: i32)`, which has equivalent functionality.
+- Fixed detection of `Pause` and `Scroll` keys on Windows.
+- On Windows, alt-tabbing while the cursor is grabbed no longer makes it impossible to re-grab the cursor.
+- On Windows, using `CursorState::Hide` when the cursor is grabbed now ungrabs the cursor first.
+- Implemented `MouseCursor::NoneCursor` on Windows.
+- Added `WindowBuilder::with_always_on_top` and `Window::set_always_on_top`. Implemented on Windows, macOS, and X11.
+- On X11, `WindowBuilderExt` now has `with_class`, `with_override_redirect`, and `with_x11_window_type` to allow for more control over window creation. `WindowExt` additionally has `set_urgent`.
+- More hints are set by default on X11, including `_NET_WM_PID` and `WM_CLIENT_MACHINE`. Note that prior to this, the `WM_CLASS` hint was automatically set to whatever value was passed to `with_title`. It's now set to the executable name to better conform to expectations and the specification; if this is undesirable, you must explicitly use `WindowBuilderExt::with_class`.
+
+# Version 0.14.0 (2018-05-09)
+
+- Created the `Copy`, `Paste` and `Cut` `VirtualKeyCode`s and added support for them on X11 and Wayland
+- Fix `.with_decorations(false)` in macOS
+- On Mac, `NSWindow` and supporting objects might be alive long after they were `closed` which resulted in apps consuming more heap then needed. Mainly it was affecting multi window applications. Not expecting any user visible change of behaviour after the fix.
+- Fix regression of Window platform extensions for macOS where `NSFullSizeContentViewWindowMask` was not being correctly applied to `.fullsize_content_view`.
+- Corrected `get_position` on Windows to be relative to the screen rather than to the taskbar.
+- Corrected `Moved` event on Windows to use position values equivalent to those returned by `get_position`. It previously supplied client area positions instead of window positions, and would additionally interpret negative values as being very large (around `u16::MAX`).
+- Implemented `Moved` event on macOS.
+- On X11, the `Moved` event correctly use window positions rather than client area positions. Additionally, a stray `Moved` that unconditionally accompanied `Resized` with the client area position relative to the parent has been eliminated; `Moved` is still received alongside `Resized`, but now only once and always correctly.
+- On Windows, implemented all variants of `DeviceEvent` other than `Text`. Mouse `DeviceEvent`s are now received even if the window isn't in the foreground.
+- `DeviceId` on Windows is no longer a unit struct, and now contains a `u32`. For `WindowEvent`s, this will always be 0, but on `DeviceEvent`s it will be the handle to that device. `DeviceIdExt::get_persistent_identifier` can be used to acquire a unique identifier for that device that persists across replugs/reboots/etc.
+- Corrected `run_forever` on X11 to stop discarding `Awakened` events.
+- Various safety and correctness improvements to the X11 backend internals.
+- Fixed memory leak on X11 every time the mouse entered the window.
+- On X11, drag and drop now works reliably in release mode.
+- Added `WindowBuilderExt::with_resize_increments` and `WindowBuilderExt::with_base_size` to X11, allowing for more optional hints to be set.
+- Rework of the wayland backend, migrating it to use [Smithay's Client Toolkit](https://github.com/Smithay/client-toolkit).
+- Added `WindowBuilder::with_window_icon` and `Window::set_window_icon`, finally making it possible to set the window icon on Windows and X11. The `icon_loading` feature can be enabled to allow for icons to be easily loaded; see example program `window_icon.rs` for usage.
+- Windows additionally has `WindowBuilderExt::with_taskbar_icon` and `WindowExt::set_taskbar_icon`.
+- On Windows, fix panic when trying to call `set_fullscreen(None)` on a window that has not been fullscreened prior.
+
+# Version 0.13.1 (2018-04-26)
+
+- Ensure necessary `x11-dl` version is used.
+
+# Version 0.13.0 (2018-04-25)
+
+- Implement `WindowBuilder::with_maximized`, `Window::set_fullscreen`, `Window::set_maximized` and `Window::set_decorations` for MacOS.
+- Implement `WindowBuilder::with_maximized`, `Window::set_fullscreen`, `Window::set_maximized` and `Window::set_decorations` for Windows.
+- On Windows, `WindowBuilder::with_fullscreen` no longer changing monitor display resolution.
 - Overhauled X11 window geometry calculations. `get_position` and `set_position` are more universally accurate across different window managers, and `get_outer_size` actually works now.
+- Fixed SIGSEGV/SIGILL crashes on macOS caused by stabilization of the `!` (never) type.
+- Implement `WindowEvent::HiDPIFactorChanged` for macOS
+- On X11, input methods now work completely out of the box, no longer requiring application developers to manually call `setlocale`. Additionally, when input methods are started, stopped, or restarted on the server end, it's correctly handled.
+- Implemented `Refresh` event on Windows.
+- Properly calculate the minimum and maximum window size on Windows, including window decorations.
+- Map more `MouseCursor` variants to cursor icons on Windows.
+- Corrected `get_position` on macOS to return outer frame position, not content area position.
+- Corrected `set_position` on macOS to set outer frame position, not content area position.
+- Added `get_inner_position` method to `Window`, which gets the position of the window's client area. This is implemented on all applicable platforms (all desktop platforms other than Wayland, where this isn't possible).
+- **Breaking:** the `Closed` event has been replaced by `CloseRequested` and `Destroyed`. To migrate, you typically just need to replace all usages of `Closed` with `CloseRequested`; see example programs for more info. The exception is iOS, where `Closed` must be replaced by `Destroyed`.
 
 # Version 0.12.0 (2018-04-06)
 

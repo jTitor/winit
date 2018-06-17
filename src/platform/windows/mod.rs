@@ -10,25 +10,48 @@ pub use self::window::Window;
 #[derive(Clone, Default)]
 pub struct PlatformSpecificWindowBuilderAttributes {
     pub parent: Option<HWND>,
+    pub taskbar_icon: Option<::Icon>,
 }
 
 unsafe impl Send for PlatformSpecificWindowBuilderAttributes {}
 unsafe impl Sync for PlatformSpecificWindowBuilderAttributes {}
 
-// TODO: document what this means
-pub type Cursor = *const winapi::ctypes::wchar_t;
+// Cursor name in UTF-16. Used to set cursor in `WM_SETCURSOR`.
+#[derive(Debug, Clone)]
+pub struct Cursor(pub *const winapi::ctypes::wchar_t);
+unsafe impl Send for Cursor {}
+unsafe impl Sync for Cursor {}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceId(u32);
+
+impl DeviceId {
+    pub fn get_persistent_identifier(&self) -> Option<String> {
+        if self.0 != 0 {
+            raw_input::get_raw_input_device_name(self.0 as _)
+        } else {
+            None
+        }
+    }
+}
 
 // Constant device ID, to be removed when this backend is updated to report real device IDs.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DeviceId;
-const DEVICE_ID: ::DeviceId = ::DeviceId(DeviceId);
+const DEVICE_ID: ::DeviceId = ::DeviceId(DeviceId(0));
+
+fn wrap_device_id(id: u32) -> ::DeviceId {
+    ::DeviceId(DeviceId(id))
+}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WindowId(HWND);
 unsafe impl Send for WindowId {}
 unsafe impl Sync for WindowId {}
 
+mod dpi;
 mod event;
 mod events_loop;
+mod icon;
 mod monitor;
+mod raw_input;
+mod util;
 mod window;

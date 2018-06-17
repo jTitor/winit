@@ -1,13 +1,13 @@
 use {ControlFlow, EventsLoopClosed};
 use cocoa::{self, appkit, foundation};
 use cocoa::appkit::{NSApplication, NSEvent, NSEventMask, NSEventModifierFlags, NSEventPhase, NSView, NSWindow};
-use events::{self, ElementState, Event, MouseButton, TouchPhase, WindowEvent, DeviceEvent, ModifiersState, KeyboardInput};
+use events::{self, ElementState, Event, TouchPhase, WindowEvent, DeviceEvent, ModifiersState, KeyboardInput};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 use super::window::Window2;
 use std;
+use std::os::raw::*;
 use super::DeviceId;
-
 
 pub struct EventsLoop {
     modifiers: Modifiers,
@@ -89,12 +89,12 @@ impl Shared {
 
     // Removes the window with the given `Id` from the `windows` list.
     //
-    // This is called when a window is either `Closed` or `Drop`ped.
+    // This is called in response to `windowWillClose`.
     pub fn find_and_remove_window(&self, id: super::window::Id) {
         if let Ok(mut windows) = self.windows.lock() {
             windows.retain(|w| match w.upgrade() {
                 Some(w) => w.id() != id,
-                None => true,
+                None => false,
             });
         }
     }
@@ -163,6 +163,13 @@ impl UserCallback {
 impl EventsLoop {
 
     pub fn new() -> Self {
+        // Mark this thread as the main thread of the Cocoa event system.
+        //
+        // This must be done before any worker threads get a chance to call it
+        // (e.g., via `EventsLoopProxy::wakeup()`), causing a wrong thread to be
+        // marked as the main thread.
+        unsafe { appkit::NSApp(); }
+
         EventsLoop {
             shared: Arc::new(Shared::new()),
             modifiers: Modifiers::new(),
@@ -287,10 +294,7 @@ impl EventsLoop {
 
         // FIXME: Document this. Why do we do this? Seems like it passes on events to window/app.
         // If we don't do this, window does not become main for some reason.
-        match event_type {
-            appkit::NSKeyDown => (),
-            _ => appkit::NSApp().sendEvent_(ns_event),
-        }
+        appkit::NSApp().sendEvent_(ns_event);
 
         let windows = self.shared.windows.lock().unwrap();
         let maybe_window = windows.iter()
@@ -311,136 +315,52 @@ impl EventsLoop {
             });
 
         match event_type {
-
-            appkit::NSKeyDown => {
-                let mut events = std::collections::VecDeque::new();
-                let received_c_str = foundation::NSString::UTF8String(ns_event.characters());
-                let received_str = std::ffi::CStr::from_ptr(received_c_str);
-
-                let vkey =  to_virtual_key_code(NSEvent::keyCode(ns_event));
-                let state = ElementState::Pressed;
-                let code = NSEvent::keyCode(ns_event) as u32;
-                let window_event = WindowEvent::KeyboardInput {
-                    device_id: DEVICE_ID,
-                    input: KeyboardInput {
-                        state: state,
-                        scancode: code,
-                        virtual_keycode: vkey,
-                        modifiers: event_mods(ns_event),
-                    },
-                };
-                for received_char in std::str::from_utf8(received_str.to_bytes()).unwrap().chars() {
-                    let window_event = WindowEvent::ReceivedCharacter(received_char);
-                    events.push_back(into_event(window_event));
-                }
-                self.shared.pending_events.lock().unwrap().extend(events.into_iter());
-                Some(into_event(window_event))
-            },
-
-            appkit::NSKeyUp => {
-                let vkey =  to_virtual_key_code(NSEvent::keyCode(ns_event));
-
-                let state = ElementState::Released;
-                let code = NSEvent::keyCode(ns_event) as u32;
-                let window_event = WindowEvent::KeyboardInput {
-                    device_id: DEVICE_ID,
-                    input: KeyboardInput {
-                        state: state,
-                        scancode: code,
-                        virtual_keycode: vkey,
-                        modifiers: event_mods(ns_event),
-                    },
-                };
-                Some(into_event(window_event))
-            },
-
             appkit::NSFlagsChanged => {
-                unsafe fn modifier_event(event: cocoa::base::id,
-                                         keymask: NSEventModifierFlags,
-                                         key: events::VirtualKeyCode,
-                                         key_pressed: bool) -> Option<WindowEvent>
-                {
-                    if !key_pressed && NSEvent::modifierFlags(event).contains(keymask) {
-                        let state = ElementState::Pressed;
-                        let code = NSEvent::keyCode(event) as u32;
-                        let window_event = WindowEvent::KeyboardInput {
-                            device_id: DEVICE_ID,
-                            input: KeyboardInput {
-                                state: state,
-                                scancode: code,
-                                virtual_keycode: Some(key),
-                                modifiers: event_mods(event),
-                            },
-                        };
-                        Some(window_event)
-
-                    } else if key_pressed && !NSEvent::modifierFlags(event).contains(keymask) {
-                        let state = ElementState::Released;
-                        let code = NSEvent::keyCode(event) as u32;
-                        let window_event = WindowEvent::KeyboardInput {
-                            device_id: DEVICE_ID,
-                            input: KeyboardInput {
-                                state: state,
-                                scancode: code,
-                                virtual_keycode: Some(key),
-                                modifiers: event_mods(event),
-                            },
-                        };
-                        Some(window_event)
-
-                    } else {
-                        None
-                    }
-                }
-
                 let mut events = std::collections::VecDeque::new();
-                if let Some(window_event) = modifier_event(ns_event,
-                                                           NSEventModifierFlags::NSShiftKeyMask,
-                                                           events::VirtualKeyCode::LShift,
-                                                           self.modifiers.shift_pressed)
-                {
+
+                if let Some(window_event) = modifier_event(
+                    ns_event,
+                    NSEventModifierFlags::NSShiftKeyMask,
+                    self.modifiers.shift_pressed,
+                ) {
                     self.modifiers.shift_pressed = !self.modifiers.shift_pressed;
                     events.push_back(into_event(window_event));
                 }
 
-                if let Some(window_event) = modifier_event(ns_event,
-                                                           NSEventModifierFlags::NSControlKeyMask,
-                                                           events::VirtualKeyCode::LControl,
-                                                           self.modifiers.ctrl_pressed)
-                {
+                if let Some(window_event) = modifier_event(
+                    ns_event,
+                    NSEventModifierFlags::NSControlKeyMask,
+                    self.modifiers.ctrl_pressed,
+                ) {
                     self.modifiers.ctrl_pressed = !self.modifiers.ctrl_pressed;
                     events.push_back(into_event(window_event));
                 }
 
-                if let Some(window_event) = modifier_event(ns_event,
-                                                           NSEventModifierFlags::NSCommandKeyMask,
-                                                           events::VirtualKeyCode::LWin,
-                                                           self.modifiers.win_pressed)
-                {
+                if let Some(window_event) = modifier_event(
+                    ns_event,
+                    NSEventModifierFlags::NSCommandKeyMask,
+                    self.modifiers.win_pressed,
+                ) {
                     self.modifiers.win_pressed = !self.modifiers.win_pressed;
                     events.push_back(into_event(window_event));
                 }
 
-                if let Some(window_event) = modifier_event(ns_event,
-                                                           NSEventModifierFlags::NSAlternateKeyMask,
-                                                           events::VirtualKeyCode::LAlt,
-                                                           self.modifiers.alt_pressed)
-                {
+                if let Some(window_event) = modifier_event(
+                    ns_event,
+                    NSEventModifierFlags::NSAlternateKeyMask,
+                    self.modifiers.alt_pressed,
+                ) {
                     self.modifiers.alt_pressed = !self.modifiers.alt_pressed;
                     events.push_back(into_event(window_event));
                 }
 
                 let event = events.pop_front();
-                self.shared.pending_events.lock().unwrap().extend(events.into_iter());
+                self.shared.pending_events
+                    .lock()
+                    .unwrap()
+                    .extend(events.into_iter());
                 event
             },
-
-            appkit::NSLeftMouseDown => { Some(into_event(WindowEvent::MouseInput { device_id: DEVICE_ID, state: ElementState::Pressed, button: MouseButton::Left, modifiers: event_mods(ns_event) })) },
-            appkit::NSLeftMouseUp => { Some(into_event(WindowEvent::MouseInput { device_id: DEVICE_ID, state: ElementState::Released, button: MouseButton::Left, modifiers: event_mods(ns_event) })) },
-            appkit::NSRightMouseDown => { Some(into_event(WindowEvent::MouseInput { device_id: DEVICE_ID, state: ElementState::Pressed, button: MouseButton::Right, modifiers: event_mods(ns_event) })) },
-            appkit::NSRightMouseUp => { Some(into_event(WindowEvent::MouseInput { device_id: DEVICE_ID, state: ElementState::Released, button: MouseButton::Right, modifiers: event_mods(ns_event) })) },
-            appkit::NSOtherMouseDown => { Some(into_event(WindowEvent::MouseInput { device_id: DEVICE_ID, state: ElementState::Pressed, button: MouseButton::Middle, modifiers: event_mods(ns_event) })) },
-            appkit::NSOtherMouseUp => { Some(into_event(WindowEvent::MouseInput { device_id: DEVICE_ID, state: ElementState::Released, button: MouseButton::Middle, modifiers: event_mods(ns_event) })) },
 
             appkit::NSMouseEntered => {
                 let window = match maybe_window.or_else(maybe_key_window) {
@@ -457,14 +377,16 @@ impl EventsLoop {
                 } else {
                     window.view.convertPoint_fromView_(window_point, cocoa::base::nil)
                 };
+
                 let view_rect = NSView::frame(*window.view);
-                let scale_factor = window.hidpi_factor();
-
-                let x = (scale_factor * view_point.x as f32) as f64;
-                let y = (scale_factor * (view_rect.size.height - view_point.y) as f32) as f64;
-                let window_event = WindowEvent::CursorMoved { device_id: DEVICE_ID, position: (x, y), modifiers: event_mods(ns_event) };
+                let x = view_point.x as f64;
+                let y = (view_rect.size.height - view_point.y) as f64;
+                let window_event = WindowEvent::CursorMoved {
+                    device_id: DEVICE_ID,
+                    position: (x, y).into(),
+                    modifiers: event_mods(ns_event),
+                };
                 let event = Event::WindowEvent { window_id: ::WindowId(window.id()), event: window_event };
-
                 self.shared.pending_events.lock().unwrap().push_back(event);
                 Some(into_event(WindowEvent::CursorEntered { device_id: DEVICE_ID }))
             },
@@ -477,50 +399,30 @@ impl EventsLoop {
                 // If the mouse movement was on one of our windows, use it.
                 // Otherwise, if one of our windows is the key window (receiving input), use it.
                 // Otherwise, return `None`.
-                let window = match maybe_window.or_else(maybe_key_window) {
-                    Some(window) => window,
+                match maybe_window.or_else(maybe_key_window) {
+                    Some(_window) => (),
                     None => return None,
-                };
-
-                let window_point = ns_event.locationInWindow();
-                let view_point = if ns_window == cocoa::base::nil {
-                    let ns_size = foundation::NSSize::new(0.0, 0.0);
-                    let ns_rect = foundation::NSRect::new(window_point, ns_size);
-                    let window_rect = window.window.convertRectFromScreen_(ns_rect);
-                    window.view.convertPoint_fromView_(window_rect.origin, cocoa::base::nil)
-                } else {
-                    window.view.convertPoint_fromView_(window_point, cocoa::base::nil)
-                };
-                let view_rect = NSView::frame(*window.view);
-                let scale_factor = window.hidpi_factor();
-
-                let mut events = std::collections::VecDeque::new();
-
-                {
-                    let x = (scale_factor * view_point.x as f32) as f64;
-                    let y = (scale_factor * (view_rect.size.height - view_point.y) as f32) as f64;
-                    let window_event = WindowEvent::CursorMoved { device_id: DEVICE_ID, position: (x, y), modifiers: event_mods(ns_event) };
-                    let event = Event::WindowEvent { window_id: ::WindowId(window.id()), event: window_event };
-                    events.push_back(event);
                 }
 
-                let delta_x = (scale_factor * ns_event.deltaX() as f32) as f64;
+                let mut events = std::collections::VecDeque::with_capacity(3);
+
+                let delta_x = ns_event.deltaX() as f64;
                 if delta_x != 0.0 {
                     let motion_event = DeviceEvent::Motion { axis: 0, value: delta_x };
-                    let event = Event::DeviceEvent{ device_id: DEVICE_ID, event: motion_event };
+                    let event = Event::DeviceEvent { device_id: DEVICE_ID, event: motion_event };
                     events.push_back(event);
                 }
 
-                let delta_y = (scale_factor * ns_event.deltaY() as f32) as f64;
+                let delta_y = ns_event.deltaY() as f64;
                 if delta_y != 0.0 {
                     let motion_event = DeviceEvent::Motion { axis: 1, value: delta_y };
-                    let event = Event::DeviceEvent{ device_id: DEVICE_ID, event: motion_event };
+                    let event = Event::DeviceEvent { device_id: DEVICE_ID, event: motion_event };
                     events.push_back(event);
                 }
 
                 if delta_x != 0.0 || delta_y != 0.0 {
                     let motion_event = DeviceEvent::MouseMotion { delta: (delta_x, delta_y) };
-                    let event = Event::DeviceEvent{ device_id: DEVICE_ID, event: motion_event };
+                    let event = Event::DeviceEvent { device_id: DEVICE_ID, event: motion_event };
                     events.push_back(event);
                 }
 
@@ -531,19 +433,22 @@ impl EventsLoop {
 
             appkit::NSScrollWheel => {
                 // If none of the windows received the scroll, return `None`.
-                let window = match maybe_window {
-                    Some(window) => window,
-                    None => return None,
-                };
+                if maybe_window.is_none() {
+                    return None;
+                }
 
                 use events::MouseScrollDelta::{LineDelta, PixelDelta};
-                let scale_factor = window.hidpi_factor();
                 let delta = if ns_event.hasPreciseScrollingDeltas() == cocoa::base::YES {
-                    PixelDelta(scale_factor * ns_event.scrollingDeltaX() as f32,
-                               scale_factor * ns_event.scrollingDeltaY() as f32)
+                    PixelDelta((
+                        ns_event.scrollingDeltaX() as f64,
+                        ns_event.scrollingDeltaY() as f64,
+                    ).into())
                 } else {
-                    LineDelta(scale_factor * ns_event.scrollingDeltaX() as f32,
-                              scale_factor * ns_event.scrollingDeltaY() as f32)
+                    // TODO: This is probably wrong
+                    LineDelta(
+                        ns_event.scrollingDeltaX() as f32,
+                        ns_event.scrollingDeltaY() as f32,
+                    )
                 };
                 let phase = match ns_event.phase() {
                     NSEventPhase::NSEventPhaseMayBegin | NSEventPhase::NSEventPhaseBegan => TouchPhase::Started,
@@ -554,11 +459,15 @@ impl EventsLoop {
                     device_id: DEVICE_ID,
                     event: DeviceEvent::MouseWheel {
                         delta: if ns_event.hasPreciseScrollingDeltas() == cocoa::base::YES {
-                            PixelDelta(ns_event.scrollingDeltaX() as f32,
-                                       ns_event.scrollingDeltaY() as f32)
+                            PixelDelta((
+                                ns_event.scrollingDeltaX() as f64,
+                                ns_event.scrollingDeltaY() as f64,
+                            ).into())
                         } else {
-                            LineDelta(ns_event.scrollingDeltaX() as f32,
-                                      ns_event.scrollingDeltaY() as f32)
+                            LineDelta(
+                                ns_event.scrollingDeltaX() as f32,
+                                ns_event.scrollingDeltaY() as f32,
+                            )
                         },
                     }
                 });
@@ -614,8 +523,7 @@ impl Proxy {
     }
 }
 
-
-fn to_virtual_key_code(code: u16) -> Option<events::VirtualKeyCode> {
+pub fn to_virtual_key_code(code: c_ushort) -> Option<events::VirtualKeyCode> {
     Some(match code {
         0x00 => events::VirtualKeyCode::A,
         0x01 => events::VirtualKeyCode::S,
@@ -671,14 +579,14 @@ fn to_virtual_key_code(code: u16) -> Option<events::VirtualKeyCode> {
         0x33 => events::VirtualKeyCode::Back,
         //0x34 => unkown,
         0x35 => events::VirtualKeyCode::Escape,
-        0x36 => events::VirtualKeyCode::RWin,
-        0x37 => events::VirtualKeyCode::LWin,
+        0x36 => events::VirtualKeyCode::LWin,
+        0x37 => events::VirtualKeyCode::RWin,
         0x38 => events::VirtualKeyCode::LShift,
         //0x39 => Caps lock,
-        //0x3a => Left alt,
+        0x3a => events::VirtualKeyCode::LAlt,
         0x3b => events::VirtualKeyCode::LControl,
         0x3c => events::VirtualKeyCode::RShift,
-        //0x3d => Right alt,
+        0x3d => events::VirtualKeyCode::RAlt,
         0x3e => events::VirtualKeyCode::RControl,
         //0x3f => Fn key,
         //0x40 => F17 Key,
@@ -751,7 +659,7 @@ fn to_virtual_key_code(code: u16) -> Option<events::VirtualKeyCode> {
     })
 }
 
-fn event_mods(event: cocoa::base::id) -> ModifiersState {
+pub fn event_mods(event: cocoa::base::id) -> ModifiersState {
     let flags = unsafe {
         NSEvent::modifierFlags(event)
     };
@@ -763,5 +671,30 @@ fn event_mods(event: cocoa::base::id) -> ModifiersState {
     }
 }
 
+unsafe fn modifier_event(
+    ns_event: cocoa::base::id,
+    keymask: NSEventModifierFlags,
+    key_pressed: bool,
+) -> Option<WindowEvent> {
+    if !key_pressed && NSEvent::modifierFlags(ns_event).contains(keymask)
+    || key_pressed && !NSEvent::modifierFlags(ns_event).contains(keymask) {
+        let state = ElementState::Released;
+        let keycode = NSEvent::keyCode(ns_event);
+        let scancode = keycode as u32;
+        let virtual_keycode = to_virtual_key_code(keycode);
+        Some(WindowEvent::KeyboardInput {
+            device_id: DEVICE_ID,
+            input: KeyboardInput {
+                state,
+                scancode,
+                virtual_keycode,
+                modifiers: event_mods(ns_event),
+            },
+        })
+    } else {
+        None
+    }
+}
+
 // Constant device ID, to be removed when this backend is updated to report real device IDs.
-const DEVICE_ID: ::DeviceId = ::DeviceId(DeviceId);
+pub const DEVICE_ID: ::DeviceId = ::DeviceId(DeviceId);
