@@ -872,7 +872,6 @@ pub unsafe extern "system" fn callback(
                                 event: MouseMotion { delta: (x, y) }
                             });
                         }
->>>>>>> 289fb47a3499560f16eed9d0de90c248121c35f1
                     }
 
                     if util::has_flag(mouse.usButtonFlags, winuser::RI_MOUSE_WHEEL) {
