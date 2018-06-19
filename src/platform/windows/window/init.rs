@@ -30,9 +30,10 @@ use winapi::shared::hidusage;
 use winapi::um::{winuser, dwmapi, wingdi, libloaderapi, processthreadsapi};
 use winapi::um::winnt::{LPCWSTR, LONG};
 
-use super::super::raw_input::register_input_devices;
+//use super::super::raw_input::register_input_devices;
+use super::{Window, WindowWrapper};
 
-unsafe fn init(window: WindowAttributes, pl_attribs: PlatformSpecificWindowBuilderAttributes,
+pub unsafe fn init(window: WindowAttributes, pl_attribs: PlatformSpecificWindowBuilderAttributes,
                inserter: events_loop::Inserter) -> Result<Window, CreationError> {
     let title = OsStr::new(&window.title).encode_wide().chain(Some(0).into_iter())
         .collect::<Vec<_>>();
@@ -124,7 +125,7 @@ unsafe fn init(window: WindowAttributes, pl_attribs: PlatformSpecificWindowBuild
     };
 
     // Set up raw input here.
-    register_input_devices(real_window.0);
+    //register_input_devices(real_window.0);
     // {
     //     let mut rid: winuser::RAWINPUTDEVICE = mem::uninitialized();
     //     rid.usUsagePage = hidusage::HID_USAGE_PAGE_GENERIC;

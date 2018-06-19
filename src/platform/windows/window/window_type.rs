@@ -32,10 +32,10 @@ use winapi::um::winnt::{LPCWSTR, LONG};
 /// The Win32 implementation of the main `Window` object.
 pub struct Window {
     /// Main handle for the window.
-    window: WindowWrapper,
+    pub window: WindowWrapper,
 
     /// The current window state.
-    window_state: Arc<Mutex<events_loop::WindowState>>,
+    pub window_state: Arc<Mutex<events_loop::WindowState>>,
 }
 
 unsafe impl Send for Window {}
@@ -314,7 +314,7 @@ impl Drop for Window {
 
 /// A simple wrapper that destroys the window when it is destroyed.
 #[doc(hidden)]
-pub struct WindowWrapper(HWND, HDC);
+pub struct WindowWrapper(pub HWND, pub HDC);
 
 impl Drop for WindowWrapper {
     #[inline]

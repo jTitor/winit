@@ -31,4 +31,5 @@ unsafe impl Sync for WindowId {}
 mod event;
 mod events_loop;
 mod monitor;
+mod raw_input;
 mod window;

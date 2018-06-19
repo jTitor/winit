@@ -12,7 +12,7 @@ use std::mem::size_of;
 pub fn onUpdateInput(wPar: WPARAM, lPar: LPARAM) -> u32 {
 	//this only updates if we have something to handle input in the first place
 	if inputMgrHnd {
-		TypedHandle<InputManager> castHnd = inputMgrHnd;
+		let mut castHnd: TypedHandle<InputManager> = inputMgrHnd;
 		//data handle is the LPARAM
 		//WPARAM indicates where window was when event happened, foreground or background
 		let mut bufSz: u32 = 0;
