@@ -2,7 +2,7 @@
 
 #![allow(dead_code, non_snake_case, non_upper_case_globals)]
 
-use cocoa::base::{class, id};
+use cocoa::base::id;
 use cocoa::foundation::{NSInteger, NSUInteger};
 use objc;
 
@@ -35,7 +35,7 @@ unsafe impl objc::Encode for NSRange {
 
 pub trait NSMutableAttributedString: Sized {
     unsafe fn alloc(_: Self) -> id {
-        msg_send![class("NSMutableAttributedString"), alloc]
+        msg_send![class!(NSMutableAttributedString), alloc]
     }
 
     unsafe fn init(self) -> id; // *mut NSMutableAttributedString

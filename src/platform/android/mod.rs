@@ -12,7 +12,6 @@ use std::sync::mpsc::{Receiver, channel};
 
 use {
     CreationError,
-    CursorState,
     Event,
     LogicalPosition,
     LogicalSize,
@@ -337,15 +336,18 @@ impl Window {
     }
 
     #[inline]
-    pub fn set_cursor_state(&self, _state: CursorState) -> Result<(), String> {
-        // N/A
-        Ok(())
+    pub fn grab_cursor(&self, _grab: bool) -> Result<(), String> {
+        Err("Cursor grabbing is not possible on Android.".to_owned())
     }
 
     #[inline]
-    pub fn set_cursor_position(&self, _position: LogicalPosition) -> Result<(), ()> {
+    pub fn hide_cursor(&self, _hide: bool) {
         // N/A
-        Ok(())
+    }
+
+    #[inline]
+    pub fn set_cursor_position(&self, _position: LogicalPosition) -> Result<(), String> {
+        Err("Setting cursor position is not possible on Android.".to_owned())
     }
 
     #[inline]

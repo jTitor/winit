@@ -2,7 +2,6 @@ use std::collections::vec_deque::IntoIter as VecDequeIter;
 
 use {
     CreationError,
-    CursorState,
     EventsLoop,
     Icon,
     LogicalPosition,
@@ -305,6 +304,10 @@ impl Window {
     ///
     /// See the [`dpi`](dpi/index.html) module for more information.
     ///
+    /// Note that this value can change depending on user action (for example if the window is
+    /// moved to another screen); as such, tracking `WindowEvent::HiDpiFactorChanged` events is
+    /// the most robust way to track the DPI you need to use to draw.
+    ///
     /// ## Platform-specific
     ///
     /// - **X11:** Can be overridden using the `WINIT_HIDPI_FACTOR` environment variable.
@@ -323,16 +326,35 @@ impl Window {
 
     /// Changes the position of the cursor in window coordinates.
     #[inline]
-    pub fn set_cursor_position(&self, position: LogicalPosition) -> Result<(), ()> {
+    pub fn set_cursor_position(&self, position: LogicalPosition) -> Result<(), String> {
         self.window.set_cursor_position(position)
     }
 
-    /// Sets how winit handles the cursor. See the documentation of `CursorState` for details.
+    /// Grabs the cursor, preventing it from leaving the window.
     ///
-    /// Has no effect on Android.
+    /// ## Platform-specific
+    ///
+    /// On macOS, this presently merely locks the cursor in a fixed location, which looks visually awkward.
+    ///
+    /// This has no effect on Android or iOS.
     #[inline]
-    pub fn set_cursor_state(&self, state: CursorState) -> Result<(), String> {
-        self.window.set_cursor_state(state)
+    pub fn grab_cursor(&self, grab: bool) -> Result<(), String> {
+        self.window.grab_cursor(grab)
+    }
+
+    /// Hides the cursor, making it invisible but still usable.
+    ///
+    /// ## Platform-specific
+    ///
+    /// On Windows and X11, the cursor is only hidden within the confines of the window.
+    ///
+    /// On macOS, the cursor is hidden as long as the window has input focus, even if the cursor is outside of the
+    /// window.
+    ///
+    /// This has no effect on Android or iOS.
+    #[inline]
+    pub fn hide_cursor(&self, hide: bool) {
+        self.window.hide_cursor(hide)
     }
 
     /// Sets the window to maximized or back

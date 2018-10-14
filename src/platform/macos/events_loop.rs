@@ -180,7 +180,7 @@ impl EventsLoop {
         where F: FnMut(Event),
     {
         unsafe {
-            if !msg_send![cocoa::base::class("NSThread"), isMainThread] {
+            if !msg_send![class!(NSThread), isMainThread] {
                 panic!("Events can only be polled from the main thread on macOS");
             }
         }
@@ -221,7 +221,7 @@ impl EventsLoop {
         where F: FnMut(Event) -> ControlFlow
     {
         unsafe {
-            if !msg_send![cocoa::base::class("NSThread"), isMainThread] {
+            if !msg_send![class!(NSThread), isMainThread] {
                 panic!("Events can only be polled from the main thread on macOS");
             }
         }
@@ -315,6 +315,27 @@ impl EventsLoop {
             });
 
         match event_type {
+            // https://github.com/glfw/glfw/blob/50eccd298a2bbc272b4977bd162d3e4b55f15394/src/cocoa_window.m#L881
+            appkit::NSKeyUp  => {
+                if let Some(key_window) = maybe_key_window() {
+                    if event_mods(ns_event).logo {
+                        let _: () = msg_send![*key_window.window, sendEvent:ns_event];
+                    }
+                }
+                None
+            },
+            // similar to above, but for `<Cmd-.>`, the keyDown is suppressed instead of the
+            // KeyUp, and the above trick does not appear to work.
+            appkit::NSKeyDown => {
+                let modifiers = event_mods(ns_event);
+                let keycode = NSEvent::keyCode(ns_event);
+                if modifiers.logo && keycode == 47 {
+                    modifier_event(ns_event, NSEventModifierFlags::NSCommandKeyMask, false)
+                        .map(into_event)
+                } else {
+                    None
+                }
+            },
             appkit::NSFlagsChanged => {
                 let mut events = std::collections::VecDeque::new();
 
@@ -589,7 +610,7 @@ pub fn to_virtual_key_code(code: c_ushort) -> Option<events::VirtualKeyCode> {
         0x3d => events::VirtualKeyCode::RAlt,
         0x3e => events::VirtualKeyCode::RControl,
         //0x3f => Fn key,
-        //0x40 => F17 Key,
+        0x40 => events::VirtualKeyCode::F17,
         0x41 => events::VirtualKeyCode::Decimal,
         //0x42 -> unkown,
         0x43 => events::VirtualKeyCode::Multiply,
@@ -604,8 +625,8 @@ pub fn to_virtual_key_code(code: c_ushort) -> Option<events::VirtualKeyCode> {
         0x4c => events::VirtualKeyCode::NumpadEnter,
         //0x4d => unkown,
         0x4e => events::VirtualKeyCode::Subtract,
-        //0x4f => F18 key,
-        //0x50 => F19 Key,
+        0x4f => events::VirtualKeyCode::F18,
+        0x50 => events::VirtualKeyCode::F19,
         0x51 => events::VirtualKeyCode::NumpadEquals,
         0x52 => events::VirtualKeyCode::Numpad0,
         0x53 => events::VirtualKeyCode::Numpad1,
@@ -615,7 +636,7 @@ pub fn to_virtual_key_code(code: c_ushort) -> Option<events::VirtualKeyCode> {
         0x57 => events::VirtualKeyCode::Numpad5,
         0x58 => events::VirtualKeyCode::Numpad6,
         0x59 => events::VirtualKeyCode::Numpad7,
-        //0x5a => F20 Key,
+        0x5a => events::VirtualKeyCode::F20,
         0x5b => events::VirtualKeyCode::Numpad8,
         0x5c => events::VirtualKeyCode::Numpad9,
         //0x5d => unkown,
@@ -631,7 +652,7 @@ pub fn to_virtual_key_code(code: c_ushort) -> Option<events::VirtualKeyCode> {
         0x67 => events::VirtualKeyCode::F11,
         //0x68 => unkown,
         0x69 => events::VirtualKeyCode::F13,
-        //0x6a => F16 Key,
+        0x6a => events::VirtualKeyCode::F16,
         0x6b => events::VirtualKeyCode::F14,
         //0x6c => unkown,
         0x6d => events::VirtualKeyCode::F10,
@@ -659,6 +680,23 @@ pub fn to_virtual_key_code(code: c_ushort) -> Option<events::VirtualKeyCode> {
     })
 }
 
+pub fn check_additional_virtual_key_codes(
+    s: &Option<String>
+) -> Option<events::VirtualKeyCode> {
+    if let &Some(ref s) = s {
+        if let Some(ch) = s.encode_utf16().next() {
+            return Some(match ch {
+                0xf718 => events::VirtualKeyCode::F21,
+                0xf719 => events::VirtualKeyCode::F22,
+                0xf71a => events::VirtualKeyCode::F23,
+                0xf71b => events::VirtualKeyCode::F24,
+                _ => return None,
+            })
+        }
+    }
+    None
+}
+
 pub fn event_mods(event: cocoa::base::id) -> ModifiersState {
     let flags = unsafe {
         NSEvent::modifierFlags(event)
@@ -674,11 +712,15 @@ pub fn event_mods(event: cocoa::base::id) -> ModifiersState {
 unsafe fn modifier_event(
     ns_event: cocoa::base::id,
     keymask: NSEventModifierFlags,
-    key_pressed: bool,
+    was_key_pressed: bool,
 ) -> Option<WindowEvent> {
-    if !key_pressed && NSEvent::modifierFlags(ns_event).contains(keymask)
-    || key_pressed && !NSEvent::modifierFlags(ns_event).contains(keymask) {
-        let state = ElementState::Released;
+    if !was_key_pressed && NSEvent::modifierFlags(ns_event).contains(keymask)
+    || was_key_pressed && !NSEvent::modifierFlags(ns_event).contains(keymask) {
+        let state = if was_key_pressed {
+            ElementState::Released
+        } else {
+            ElementState::Pressed
+        };
         let keycode = NSEvent::keyCode(ns_event);
         let scancode = keycode as u32;
         let virtual_keycode = to_virtual_key_code(keycode);

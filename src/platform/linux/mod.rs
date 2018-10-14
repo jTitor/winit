@@ -1,4 +1,4 @@
-#![cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd"))]
+#![cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
 
 use std::collections::VecDeque;
 use std::{env, mem};
@@ -6,21 +6,18 @@ use std::ffi::CStr;
 use std::os::raw::*;
 use std::sync::Arc;
 
+use parking_lot::Mutex;
 use sctk::reexports::client::ConnectError;
 
 use {
     CreationError,
-    CursorState,
     EventsLoopClosed,
     Icon,
-    LogicalPosition,
-    LogicalSize,
     MouseCursor,
-    PhysicalPosition,
-    PhysicalSize,
     ControlFlow,
     WindowAttributes,
 };
+use dpi::{LogicalPosition, LogicalSize, PhysicalPosition, PhysicalSize};
 use window::MonitorId as RootMonitorId;
 use self::x11::{XConnection, XError};
 use self::x11::ffi::XVisualInfo;
@@ -48,11 +45,12 @@ pub struct PlatformSpecificWindowBuilderAttributes {
     pub class: Option<(String, String)>,
     pub override_redirect: bool,
     pub x11_window_type: x11::util::WindowType,
+    pub gtk_theme_variant: Option<String>,
 }
 
-thread_local!(
-    pub static X11_BACKEND: Result<Arc<XConnection>, XNotSupported> = {
-        XConnection::new(Some(x_error_callback)).map(Arc::new)
+lazy_static!(
+    pub static ref X11_BACKEND: Mutex<Result<Arc<XConnection>, XNotSupported>> = {
+        Mutex::new(XConnection::new(Some(x_error_callback)).map(Arc::new))
     };
 );
 
@@ -251,10 +249,18 @@ impl Window {
     }
 
     #[inline]
-    pub fn set_cursor_state(&self, state: CursorState) -> Result<(), String> {
+    pub fn grab_cursor(&self, grab: bool) -> Result<(), String> {
         match self {
-            &Window::X(ref w) => w.set_cursor_state(state),
-            &Window::Wayland(ref w) => w.set_cursor_state(state)
+            &Window::X(ref window) => window.grab_cursor(grab),
+            &Window::Wayland(ref window) => window.grab_cursor(grab),
+        }
+    }
+
+    #[inline]
+    pub fn hide_cursor(&self, hide: bool) {
+        match self {
+            &Window::X(ref window) => window.hide_cursor(hide),
+            &Window::Wayland(ref window) => window.hide_cursor(hide),
         }
     }
 
@@ -267,7 +273,7 @@ impl Window {
     }
 
     #[inline]
-    pub fn set_cursor_position(&self, position: LogicalPosition) -> Result<(), ()> {
+    pub fn set_cursor_position(&self, position: LogicalPosition) -> Result<(), String> {
         match self {
             &Window::X(ref w) => w.set_cursor_position(position),
             &Window::Wayland(ref w) => w.set_cursor_position(position),
@@ -357,29 +363,28 @@ unsafe extern "C" fn x_error_callback(
     display: *mut x11::ffi::Display,
     event: *mut x11::ffi::XErrorEvent,
 ) -> c_int {
-    X11_BACKEND.with(|result| {
-        if let &Ok(ref xconn) = result {
-            let mut buf: [c_char; 1024] = mem::uninitialized();
-            (xconn.xlib.XGetErrorText)(
-                display,
-                (*event).error_code as c_int,
-                buf.as_mut_ptr(),
-                buf.len() as c_int,
-            );
-            let description = CStr::from_ptr(buf.as_ptr()).to_string_lossy();
+    let xconn_lock = X11_BACKEND.lock();
+    if let Ok(ref xconn) = *xconn_lock {
+        let mut buf: [c_char; 1024] = mem::uninitialized();
+        (xconn.xlib.XGetErrorText)(
+            display,
+            (*event).error_code as c_int,
+            buf.as_mut_ptr(),
+            buf.len() as c_int,
+        );
+        let description = CStr::from_ptr(buf.as_ptr()).to_string_lossy();
 
-            let error = XError {
-                description: description.into_owned(),
-                error_code: (*event).error_code,
-                request_code: (*event).request_code,
-                minor_code: (*event).minor_code,
-            };
+        let error = XError {
+            description: description.into_owned(),
+            error_code: (*event).error_code,
+            request_code: (*event).request_code,
+            minor_code: (*event).minor_code,
+        };
 
-            eprintln!("[winit X11 error] {:#?}", error);
+        eprintln!("[winit X11 error] {:#?}", error);
 
-            *xconn.latest_error.lock() = Some(error);
-        }
-    });
+        *xconn.latest_error.lock() = Some(error);
+    }
     // Fun fact: this return value is completely ignored.
     0
 }
@@ -441,14 +446,13 @@ r#"Failed to initialize any backend!
     }
 
     pub fn new_x11() -> Result<EventsLoop, XNotSupported> {
-        X11_BACKEND.with(|result| {
-            result
-                .as_ref()
-                .map(Arc::clone)
-                .map(x11::EventsLoop::new)
-                .map(EventsLoop::X)
-                .map_err(|err| err.clone())
-        })
+        X11_BACKEND
+            .lock()
+            .as_ref()
+            .map(Arc::clone)
+            .map(x11::EventsLoop::new)
+            .map(EventsLoop::X)
+            .map_err(|err| err.clone())
     }
 
     #[inline]

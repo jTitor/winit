@@ -1,7 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 
-use {CreationError, CursorState, MouseCursor, WindowAttributes, LogicalPosition, LogicalSize};
+use {CreationError, MouseCursor, WindowAttributes};
+use dpi::{LogicalPosition, LogicalSize};
 use platform::MonitorId as PlatformMonitorId;
 use window::MonitorId as RootMonitorId;
 
@@ -28,9 +29,7 @@ pub struct Window {
 
 impl Window {
     pub fn new(evlp: &EventsLoop, attributes: WindowAttributes) -> Result<Window, CreationError> {
-        // TODO: Update for new DPI API
-        //let (width, height) = attributes.dimensions.unwrap_or((800, 600));
-        let (width, height) = (64, 64);
+        let (width, height) = attributes.dimensions.map(Into::into).unwrap_or((800, 600));
         // Create the window
         let size = Arc::new(Mutex::new((width, height)));
 
@@ -70,13 +69,10 @@ impl Window {
 
         let window_store = evlp.store.clone();
         let my_surface = surface.clone();
-        let mut frame = SWindow::<BasicFrame>::init(
+        let mut frame = SWindow::<BasicFrame>::init_from_env(
+            &evlp.env,
             surface.clone(),
             (width, height),
-            &evlp.env.compositor,
-            &evlp.env.subcompositor,
-            &evlp.env.shm,
-            &evlp.env.shell,
             move |event, ()| match event {
                 WEvent::Configure { new_size, .. } => {
                     let mut store = window_store.lock().unwrap();
@@ -130,9 +126,8 @@ impl Window {
         frame.set_decorate(attributes.decorations);
 
         // min-max dimensions
-        // TODO: Update for new DPI API
-        //frame.set_min_size(attributes.min_dimensions);
-        //frame.set_max_size(attributes.max_dimensions);
+        frame.set_min_size(attributes.min_dimensions.map(Into::into));
+        frame.set_max_size(attributes.max_dimensions.map(Into::into));
 
         let kill_switch = Arc::new(Mutex::new(false));
         let need_frame_refresh = Arc::new(Mutex::new(true));
@@ -235,22 +230,6 @@ impl Window {
     }
 
     #[inline]
-    pub fn set_cursor(&self, _cursor: MouseCursor) {
-        // TODO
-    }
-
-    #[inline]
-    pub fn set_cursor_state(&self, state: CursorState) -> Result<(), String> {
-        use CursorState::{Grab, Hide, Normal};
-        // TODO : not yet possible on wayland to grab cursor
-        match state {
-            Grab => Err("Cursor cannot be grabbed on wayland yet.".to_string()),
-            Hide => Err("Cursor cannot be hidden on wayland yet.".to_string()),
-            Normal => Ok(()),
-        }
-    }
-
-    #[inline]
     pub fn hidpi_factor(&self) -> i32 {
         self.monitors.lock().unwrap().compute_hidpi_factor()
     }
@@ -283,9 +262,23 @@ impl Window {
     }
 
     #[inline]
-    pub fn set_cursor_position(&self, _pos: LogicalPosition) -> Result<(), ()> {
-        // TODO: not yet possible on wayland
-        Err(())
+    pub fn set_cursor(&self, _cursor: MouseCursor) {
+        // TODO
+    }
+
+    #[inline]
+    pub fn hide_cursor(&self, _hide: bool) {
+        // TODO: This isn't possible on Wayland yet
+    }
+
+    #[inline]
+    pub fn grab_cursor(&self, _grab: bool) -> Result<(), String> {
+        Err("Cursor grabbing is not yet possible on Wayland.".to_owned())
+    }
+
+    #[inline]
+    pub fn set_cursor_position(&self, _pos: LogicalPosition) -> Result<(), String> {
+        Err("Setting the cursor position is not yet possible on Wayland.".to_owned())
     }
 
     pub fn get_display(&self) -> &Display {

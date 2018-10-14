@@ -7,8 +7,9 @@ use std::sync::Arc;
 use libc;
 use parking_lot::Mutex;
 
-use {CursorState, Icon, LogicalPosition, LogicalSize, MouseCursor, WindowAttributes};
+use {Icon, MouseCursor, WindowAttributes};
 use CreationError::{self, OsError};
+use dpi::{LogicalPosition, LogicalSize};
 use platform::MonitorId as PlatformMonitorId;
 use platform::PlatformSpecificWindowBuilderAttributes;
 use platform::x11::MonitorId as X11MonitorId;
@@ -28,13 +29,12 @@ unsafe extern "C" fn visibility_predicate(
 
 #[derive(Debug, Default)]
 pub struct SharedState {
-    // Window creation assumes a DPI factor of 1.0, so we use this flag to handle that special case.
-    pub is_new_window: bool,
     pub cursor_pos: Option<(f64, f64)>,
     pub size: Option<(u32, u32)>,
     pub position: Option<(i32, i32)>,
     pub inner_position: Option<(i32, i32)>,
     pub inner_position_rel_parent: Option<(i32, i32)>,
+    pub guessed_dpi: Option<f64>,
     pub last_monitor: Option<X11MonitorId>,
     pub dpi_adjusted: Option<(f64, f64)>,
     // Used to restore position after exiting fullscreen.
@@ -45,9 +45,9 @@ pub struct SharedState {
 }
 
 impl SharedState {
-    fn new() -> Mutex<Self> {
+    fn new(dpi_factor: f64) -> Mutex<Self> {
         let mut shared_state = SharedState::default();
-        shared_state.is_new_window = true;
+        shared_state.guessed_dpi = Some(dpi_factor);
         Mutex::new(shared_state)
     }
 }
@@ -61,7 +61,8 @@ pub struct UnownedWindow {
     root: ffi::Window, // never changes
     screen_id: i32, // never changes
     cursor: Mutex<MouseCursor>,
-    cursor_state: Mutex<CursorState>,
+    cursor_grabbed: Mutex<bool>,
+    cursor_hidden: Mutex<bool>,
     ime_sender: Mutex<ImeSender>,
     pub multitouch: bool, // never changes
     pub shared_state: Mutex<SharedState>,
@@ -76,15 +77,51 @@ impl UnownedWindow {
         let xconn = &event_loop.xconn;
         let root = event_loop.root;
 
-        let max_dimensions: Option<(u32, u32)> = window_attrs.max_dimensions.map(Into::into);
-        let min_dimensions: Option<(u32, u32)> = window_attrs.min_dimensions.map(Into::into);
+        let monitors = xconn.get_available_monitors();
+        let dpi_factor = if !monitors.is_empty() {
+            let mut dpi_factor = Some(monitors[0].get_hidpi_factor());
+            for monitor in &monitors {
+                if Some(monitor.get_hidpi_factor()) != dpi_factor {
+                    dpi_factor = None;
+                }
+            }
+            dpi_factor.unwrap_or_else(|| {
+                xconn.query_pointer(root, util::VIRTUAL_CORE_POINTER)
+                    .ok()
+                    .and_then(|pointer_state| {
+                        let (x, y) = (pointer_state.root_x as i64, pointer_state.root_y as i64);
+                        let mut dpi_factor = None;
+                        for monitor in &monitors {
+                            if monitor.rect.contains_point(x, y) {
+                                dpi_factor = Some(monitor.get_hidpi_factor());
+                                break;
+                            }
+                        }
+                        dpi_factor
+                    })
+                    .unwrap_or(1.0)
+            })
+        } else {
+            return Err(OsError(format!("No monitors were detected.")));
+        };
+
+        info!("Guessed window DPI factor: {}", dpi_factor);
+
+        let max_dimensions: Option<(u32, u32)> = window_attrs.max_dimensions.map(|size| {
+            size.to_physical(dpi_factor).into()
+        });
+        let min_dimensions: Option<(u32, u32)> = window_attrs.min_dimensions.map(|size| {
+            size.to_physical(dpi_factor).into()
+        });
 
         let dimensions = {
             // x11 only applies constraints when the window is actively resized
             // by the user, so we have to manually apply the initial constraints
-            let mut dimensions = window_attrs.dimensions
+            let mut dimensions: (u32, u32) = window_attrs.dimensions
+                .or_else(|| Some((800, 600).into()))
+                .map(|size| size.to_physical(dpi_factor))
                 .map(Into::into)
-                .unwrap_or((800, 600));
+                .unwrap();
             if let Some(max) = max_dimensions {
                 dimensions.0 = cmp::min(dimensions.0, max.0);
                 dimensions.1 = cmp::min(dimensions.1, max.1);
@@ -93,6 +130,7 @@ impl UnownedWindow {
                 dimensions.0 = cmp::max(dimensions.0, min.0);
                 dimensions.1 = cmp::max(dimensions.1, min.1);
             }
+            debug!("Calculated physical dimensions: {}x{}", dimensions.0, dimensions.1);
             dimensions
         };
 
@@ -160,10 +198,11 @@ impl UnownedWindow {
             root,
             screen_id,
             cursor: Default::default(),
-            cursor_state: Default::default(),
+            cursor_grabbed: Default::default(),
+            cursor_hidden: Default::default(),
             ime_sender: Mutex::new(event_loop.ime_sender.clone()),
             multitouch: window_attrs.multitouch,
-            shared_state: SharedState::new(),
+            shared_state: SharedState::new(dpi_factor),
         };
 
         // Title must be set before mapping. Some tiling window managers (i.e. i3) use the window
@@ -233,17 +272,25 @@ impl UnownedWindow {
                 window.set_window_type(pl_attribs.x11_window_type).queue();
             }
 
+            if let Some(variant) = pl_attribs.gtk_theme_variant {
+                window.set_gtk_theme_variant(variant).queue();
+            }
+
             // set size hints
             {
                 let mut min_dimensions = window_attrs.min_dimensions;
                 let mut max_dimensions = window_attrs.max_dimensions;
-                if !window_attrs.resizable && !util::wm_name_is_one_of(&["Xfwm4"]) {
-                    max_dimensions = Some(dimensions.into());
-                    min_dimensions = Some(dimensions.into());
+                if !window_attrs.resizable {
+                    if util::wm_name_is_one_of(&["Xfwm4"]) {
+                        warn!("To avoid a WM bug, disabling resizing has no effect on Xfwm4");
+                    } else {
+                        max_dimensions = Some(dimensions.into());
+                        min_dimensions = Some(dimensions.into());
 
-                    let mut shared_state_lock = window.shared_state.lock();
-                    shared_state_lock.min_dimensions = window_attrs.min_dimensions;
-                    shared_state_lock.max_dimensions = window_attrs.max_dimensions;
+                        let mut shared_state_lock = window.shared_state.lock();
+                        shared_state_lock.min_dimensions = window_attrs.min_dimensions;
+                        shared_state_lock.max_dimensions = window_attrs.max_dimensions;
+                    }
                 }
 
                 let mut normal_hints = util::NormalHints::new(xconn);
@@ -414,6 +461,19 @@ impl UnownedWindow {
         )
     }
 
+    fn set_gtk_theme_variant(&self, variant: String) -> util::Flusher {
+        let hint_atom = unsafe { self.xconn.get_atom_unchecked(b"_GTK_THEME_VARIANT\0") };
+        let utf8_atom = unsafe { self.xconn.get_atom_unchecked(b"UTF8_STRING\0") };
+        let variant = CString::new(variant).expect("`_GTK_THEME_VARIANT` contained null byte");
+        self.xconn.change_property(
+            self.xwindow,
+            hint_atom,
+            utf8_atom,
+            util::PropMode::Replace,
+            variant.as_bytes(),
+        )
+    }
+
     #[inline]
     pub fn set_urgent(&self, is_urgent: bool) {
         let mut wm_hints = self.xconn.get_wm_hints(self.xwindow).expect("`XGetWMHints` failed");
@@ -479,10 +539,10 @@ impl UnownedWindow {
         self.invalidate_cached_frame_extents();
     }
 
-    fn get_rect(&self) -> Option<util::Rect> {
+    fn get_rect(&self) -> Option<util::AaRect> {
         // TODO: This might round-trip more times than needed.
         if let (Some(position), Some(size)) = (self.get_position_physical(), self.get_outer_size_physical()) {
-            Some(util::Rect::new(position, size))
+            Some(util::AaRect::new(position, size))
         } else {
             None
         }
@@ -540,7 +600,7 @@ impl UnownedWindow {
                 wm_name_atom,
                 utf8_atom,
                 util::PropMode::Replace,
-                title.as_bytes_with_nul(),
+                title.as_bytes(),
             )
         }
     }
@@ -850,6 +910,7 @@ impl UnownedWindow {
             // Making the window unresizable on Xfwm prevents further changes to `WM_NORMAL_HINTS` from being detected.
             // This makes it impossible for resizing to be re-enabled, and also breaks DPI scaling. As such, we choose
             // the lesser of two evils and do nothing.
+            warn!("To avoid a WM bug, disabling resizing has no effect on Xfwm4");
             return;
         }
 
@@ -976,9 +1037,6 @@ impl UnownedWindow {
 
             MouseCursor::ZoomIn => load(b"zoom-in\0"),
             MouseCursor::ZoomOut => load(b"zoom-out\0"),
-
-            MouseCursor::NoneCursor => self.create_empty_cursor()
-                .expect("Failed to create empty cursor"),
         }
     }
 
@@ -995,7 +1053,7 @@ impl UnownedWindow {
     #[inline]
     pub fn set_cursor(&self, cursor: MouseCursor) {
         *self.cursor.lock() = cursor;
-        if *self.cursor_state.lock() != CursorState::Hide {
+        if !*self.cursor_hidden.lock() {
             self.update_cursor(self.get_cursor(cursor));
         }
     }
@@ -1039,67 +1097,73 @@ impl UnownedWindow {
     }
 
     #[inline]
-    pub fn set_cursor_state(&self, state: CursorState) -> Result<(), String> {
-        use CursorState::*;
-
-        let mut cursor_state_lock = self.cursor_state.lock();
-
-        match (state, *cursor_state_lock) {
-            (Normal, Normal) | (Hide, Hide) | (Grab, Grab) => return Ok(()),
-            _ => {},
+    pub fn grab_cursor(&self, grab: bool) -> Result<(), String> {
+        let mut grabbed_lock = self.cursor_grabbed.lock();
+        if grab == *grabbed_lock { return Ok(()); }
+        unsafe {
+            // We ungrab before grabbing to prevent passive grabs from causing `AlreadyGrabbed`.
+            // Therefore, this is common to both codepaths.
+            (self.xconn.xlib.XUngrabPointer)(self.xconn.display, ffi::CurrentTime);
         }
+        let result = if grab {
+            let result = unsafe {
+                (self.xconn.xlib.XGrabPointer)(
+                    self.xconn.display,
+                    self.xwindow,
+                    ffi::True,
+                    (
+                        ffi::ButtonPressMask
+                        | ffi::ButtonReleaseMask
+                        | ffi::EnterWindowMask
+                        | ffi::LeaveWindowMask
+                        | ffi::PointerMotionMask
+                        | ffi::PointerMotionHintMask
+                        | ffi::Button1MotionMask
+                        | ffi::Button2MotionMask
+                        | ffi::Button3MotionMask
+                        | ffi::Button4MotionMask
+                        | ffi::Button5MotionMask
+                        | ffi::ButtonMotionMask
+                        | ffi::KeymapStateMask
+                    ) as c_uint,
+                    ffi::GrabModeAsync,
+                    ffi::GrabModeAsync,
+                    self.xwindow,
+                    0,
+                    ffi::CurrentTime,
+                )
+            };
 
-        match *cursor_state_lock {
-            Grab => {
-                unsafe {
-                    (self.xconn.xlib.XUngrabPointer)(self.xconn.display, ffi::CurrentTime);
-                    self.xconn.flush_requests().expect("Failed to call XUngrabPointer");
-                }
-            },
-            Normal => {},
-            Hide => self.update_cursor(self.get_cursor(*self.cursor.lock())),
+            match result {
+                ffi::GrabSuccess => Ok(()),
+                ffi::AlreadyGrabbed => Err("Cursor could not be grabbed: already grabbed by another client"),
+                ffi::GrabInvalidTime => Err("Cursor could not be grabbed: invalid time"),
+                ffi::GrabNotViewable => Err("Cursor could not be grabbed: grab location not viewable"),
+                ffi::GrabFrozen => Err("Cursor could not be grabbed: frozen by another client"),
+                _ => unreachable!(),
+            }.map_err(|err| err.to_owned())
+        } else {
+            self.xconn.flush_requests()
+                .map_err(|err| format!("Failed to call `XUngrabPointer`: {:?}", err))
+        };
+        if result.is_ok() {
+            *grabbed_lock = grab;
         }
+        result
+    }
 
-        match state {
-            Normal => {
-                *cursor_state_lock = state;
-                Ok(())
-            },
-            Hide => {
-                *cursor_state_lock = state;
-                self.update_cursor(
-                    self.create_empty_cursor().expect("Failed to create empty cursor")
-                );
-                Ok(())
-            },
-            Grab => {
-                unsafe {
-                    // Ungrab before grabbing to prevent passive grabs
-                    // from causing AlreadyGrabbed
-                    (self.xconn.xlib.XUngrabPointer)(self.xconn.display, ffi::CurrentTime);
-
-                    match (self.xconn.xlib.XGrabPointer)(
-                        self.xconn.display, self.xwindow, ffi::True,
-                        (ffi::ButtonPressMask | ffi::ButtonReleaseMask | ffi::EnterWindowMask |
-                        ffi::LeaveWindowMask | ffi::PointerMotionMask | ffi::PointerMotionHintMask |
-                        ffi::Button1MotionMask | ffi::Button2MotionMask | ffi::Button3MotionMask |
-                        ffi::Button4MotionMask | ffi::Button5MotionMask | ffi::ButtonMotionMask |
-                        ffi::KeymapStateMask) as c_uint,
-                        ffi::GrabModeAsync, ffi::GrabModeAsync,
-                        self.xwindow, 0, ffi::CurrentTime
-                    ) {
-                        ffi::GrabSuccess => {
-                            *cursor_state_lock = state;
-                            Ok(())
-                        },
-                        ffi::AlreadyGrabbed | ffi::GrabInvalidTime |
-                        ffi::GrabNotViewable | ffi::GrabFrozen
-                            => Err("cursor could not be grabbed".to_string()),
-                        _ => unreachable!(),
-                    }
-                }
-            },
-        }
+    #[inline]
+    pub fn hide_cursor(&self, hide: bool) {
+        let mut hidden_lock = self.cursor_hidden.lock();
+        if hide == *hidden_lock {return; }
+        let cursor = if hide {
+            self.create_empty_cursor().expect("Failed to create empty cursor")
+        } else {
+            self.get_cursor(*self.cursor.lock())
+        };
+        *hidden_lock = hide;
+        drop(hidden_lock);
+        self.update_cursor(cursor);
     }
 
     #[inline]
@@ -1107,7 +1171,7 @@ impl UnownedWindow {
         self.get_current_monitor().hidpi_factor
     }
 
-    pub(crate) fn set_cursor_position_physical(&self, x: i32, y: i32) -> Result<(), ()> {
+    pub fn set_cursor_position_physical(&self, x: i32, y: i32) -> Result<(), String> {
         unsafe {
             (self.xconn.xlib.XWarpPointer)(
                 self.xconn.display,
@@ -1120,12 +1184,12 @@ impl UnownedWindow {
                 x,
                 y,
             );
-            self.xconn.flush_requests().map_err(|_| ())
+            self.xconn.flush_requests().map_err(|e| format!("`XWarpPointer` failed: {:?}", e))
         }
     }
 
     #[inline]
-    pub fn set_cursor_position(&self, logical_position: LogicalPosition) -> Result<(), ()> {
+    pub fn set_cursor_position(&self, logical_position: LogicalPosition) -> Result<(), String> {
         let (x, y) = logical_position.to_physical(self.get_hidpi_factor()).into();
         self.set_cursor_position_physical(x, y)
     }

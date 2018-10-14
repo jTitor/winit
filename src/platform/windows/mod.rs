@@ -11,13 +11,14 @@ pub use self::window::Window;
 pub struct PlatformSpecificWindowBuilderAttributes {
     pub parent: Option<HWND>,
     pub taskbar_icon: Option<::Icon>,
+    pub no_redirection_bitmap: bool,
 }
 
 unsafe impl Send for PlatformSpecificWindowBuilderAttributes {}
 unsafe impl Sync for PlatformSpecificWindowBuilderAttributes {}
 
 // Cursor name in UTF-16. Used to set cursor in `WM_SETCURSOR`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct Cursor(pub *const winapi::ctypes::wchar_t);
 unsafe impl Send for Cursor {}
 unsafe impl Sync for Cursor {}

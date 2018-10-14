@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::AsRawHandle;
-use std::sync::{Arc, Barrier, Condvar, mpsc, Mutex};
+use std::sync::{Arc, Barrier, mpsc, Mutex};
 
 use winapi::ctypes::c_int;
 use winapi::shared::minwindef::{
@@ -40,7 +40,6 @@ use winapi::um::winnt::{LONG, LPCSTR, SHORT};
 
 use {
     ControlFlow,
-    CursorState,
     Event,
     EventsLoopClosed,
     KeyboardInput,
@@ -59,6 +58,7 @@ use platform::platform::dpi::{
     get_hwnd_scale_factor,
 };
 use platform::platform::event::{handle_extended_keys, process_key_params, vkey_to_winit_vkey};
+use platform::platform::icon::WinIcon;
 use platform::platform::raw_input::{get_raw_input_data, get_raw_mouse_button_state};
 use platform::platform::window::adjust_size;
 
@@ -83,8 +83,8 @@ pub struct SavedWindowInfo {
 pub struct WindowState {
     /// Cursor to set at the next `WM_SETCURSOR` event received.
     pub cursor: Cursor,
-    /// Cursor state to set at the next `WM_SETCURSOR` event received.
-    pub cursor_state: CursorState,
+    pub cursor_grabbed: bool,
+    pub cursor_hidden: bool,
     /// Used by `WM_GETMINMAXINFO`.
     pub max_size: Option<PhysicalSize>,
     pub min_size: Option<PhysicalSize>,
@@ -95,6 +95,13 @@ pub struct WindowState {
     // This is different from the value in `SavedWindowInfo`! That one represents the DPI saved upon entering
     // fullscreen. This will always be the most recent DPI for the window.
     pub dpi_factor: f64,
+    pub fullscreen: Option<::MonitorId>,
+    pub window_icon: Option<WinIcon>,
+    pub taskbar_icon: Option<WinIcon>,
+    pub decorations: bool,
+    pub always_on_top: bool,
+    pub maximized: bool,
+    pub resizable: bool,
 }
 
 impl WindowState {
@@ -131,10 +138,6 @@ pub struct EventsLoop {
     thread_id: DWORD,
     // Receiver for the events. The sender is in the background thread.
     receiver: mpsc::Receiver<Event>,
-    // Variable that contains the block state of the win32 event loop thread during a WM_SIZE event.
-    // The mutex's value is `true` when it's blocked, and should be set to false when it's done
-    // blocking. That's done by the parent thread when it receives a Resized event.
-    win32_block_loop: Arc<(Mutex<bool>, Condvar)>,
 }
 
 impl EventsLoop {
@@ -147,8 +150,6 @@ impl EventsLoop {
 
         // The main events transfer channel.
         let (tx, rx) = mpsc::channel();
-        let win32_block_loop = Arc::new((Mutex::new(false), Condvar::new()));
-        let win32_block_loop_child = win32_block_loop.clone();
 
         // Local barrier in order to block the `new()` function until the background thread has
         // an events queue.
@@ -160,7 +161,6 @@ impl EventsLoop {
                 *context_stash.borrow_mut() = Some(ThreadLocalData {
                     sender: tx,
                     windows: HashMap::with_capacity(4),
-                    win32_block_loop: win32_block_loop_child,
                     mouse_buttons_down: 0
                 });
             });
@@ -213,7 +213,6 @@ impl EventsLoop {
         EventsLoop {
             thread_id,
             receiver: rx,
-            win32_block_loop,
         }
     }
 
@@ -225,18 +224,8 @@ impl EventsLoop {
                 Ok(e) => e,
                 Err(_) => return
             };
-            let is_resize = match event {
-                Event::WindowEvent{ event: WindowEvent::Resized(..), .. } => true,
-                _ => false
-            };
 
             callback(event);
-            if is_resize {
-                let (ref mutex, ref cvar) = *self.win32_block_loop;
-                let mut block_thread = mutex.lock().unwrap();
-                *block_thread = false;
-                cvar.notify_all();
-            }
         }
     }
 
@@ -248,18 +237,8 @@ impl EventsLoop {
                 Ok(e) => e,
                 Err(_) => return
             };
-            let is_resize = match event {
-                Event::WindowEvent{ event: WindowEvent::Resized(..), .. } => true,
-                _ => false
-            };
 
             let flow = callback(event);
-            if is_resize {
-                let (ref mutex, ref cvar) = *self.win32_block_loop;
-                let mut block_thread = mutex.lock().unwrap();
-                *block_thread = false;
-                cvar.notify_all();
-            }
             match flow {
                 ControlFlow::Continue => continue,
                 ControlFlow::Break => break,
@@ -327,6 +306,11 @@ impl EventsLoopProxy {
     ///
     /// The `Inserted` can be used to inject a `WindowState` for the callback to use. The state is
     /// removed automatically if the callback receives a `WM_CLOSE` message for the window.
+    ///
+    /// Note that if you are using this to change some property of a window and updating
+    /// `WindowState` then you should call this within the lock of `WindowState`. Otherwise the
+    /// events may be sent to the other thread in different order to the one in which you set
+    /// `WindowState`, leaving them out of sync.
     pub fn execute_in_thread<F>(&self, function: F)
     where
         F: FnMut(Inserter) + Send + 'static,
@@ -358,7 +342,7 @@ lazy_static! {
         }
     };
     // Message sent when we want to execute a closure in the thread.
-    // WPARAM contains a Box<Box<FnMut()>> that must be retreived with `Box::from_raw`,
+    // WPARAM contains a Box<Box<FnMut()>> that must be retrieved with `Box::from_raw`,
     // and LPARAM is unused.
     static ref EXEC_MSG_ID: u32 = {
         unsafe {
@@ -387,7 +371,6 @@ thread_local!(static CONTEXT_STASH: RefCell<Option<ThreadLocalData>> = RefCell::
 struct ThreadLocalData {
     sender: mpsc::Sender<Event>,
     windows: HashMap<HWND, Arc<Mutex<WindowState>>>,
-    win32_block_loop: Arc<(Mutex<bool>, Condvar)>,
     mouse_buttons_down: u32
 }
 
@@ -515,24 +498,7 @@ pub unsafe extern "system" fn callback(
                     event: Resized(logical_size),
                 };
 
-                // If this window has been inserted into the window map, the resize event happened
-                // during the event loop. If it hasn't, the event happened on window creation and
-                // should be ignored.
-                if cstash.windows.get(&window).is_some() {
-                    let (ref mutex, ref cvar) = *cstash.win32_block_loop;
-                    let mut block_thread = mutex.lock().unwrap();
-                    *block_thread = true;
-
-                    // The event needs to be sent after the lock to ensure that `notify_all` is
-                    // called after `wait`.
-                    cstash.sender.send(event).ok();
-
-                    while *block_thread {
-                        block_thread = cvar.wait(block_thread).unwrap();
-                    }
-                } else {
-                    cstash.sender.send(event).ok();
-                }
+                cstash.sender.send(event).ok();
             });
             0
         },
